@@ -1,6 +1,8 @@
 package com.example.codescannergs1
 
 import android.util.Log
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 object GS1Parser {
 
@@ -72,6 +74,62 @@ object GS1Parser {
                 ExtractionResult(data, "")
             }
         }
+    }
+
+    fun checkPlausibility(ai: String, value: String): Pair<Boolean, String> {
+        val definition = aiDefinitions[ai]
+        if (definition == null) {
+            return Pair(false, "Unknown AI")
+        }
+
+        when (definition.type) {
+            AIType.NUMERIC -> if (!value.all { it.isDigit() }) return Pair(false, "Value is not numeric")
+            AIType.ALPHANUMERIC -> if (!value.all { it.isLetterOrDigit() }) return Pair(false, "Value is not alphanumeric")
+            AIType.DATE -> {
+                if (!value.all { it.isDigit() }) return Pair(false, "Date is not numeric")
+                if (value.length != 6) return Pair(false, "Date must be 6 digits")
+                try {
+                    val date = SimpleDateFormat("yyMMdd", Locale.US).parse(value)
+                    if (date == null) return Pair(false, "Invalid date format")
+                } catch (e: Exception) {
+                    return Pair(false, "Invalid date format")
+                }
+            }
+        }
+
+        if (ai == "01" || ai == "02") { // GTIN
+            if (!isValidGtin(value)) return Pair(false, "Invalid GTIN check digit")
+        } else if (ai == "00") { // SSCC
+            if (!isValidSscc(value)) return Pair(false, "Invalid SSCC check digit")
+        }
+
+        return Pair(true, "OK")
+    }
+
+    private fun isValidGtin(gtin: String): Boolean {
+        if (gtin.length != 14) return false
+        val checkDigit = gtin.last().toString().toInt()
+        val payload = gtin.substring(0, 13)
+        var sum = 0
+        for ((index, char) in payload.withIndex()) {
+            val digit = char.toString().toInt()
+            sum += if (index % 2 == 0) digit * 3 else digit
+        }
+        val calculatedCheckDigit = (10 - (sum % 10)) % 10
+        return checkDigit == calculatedCheckDigit
+    }
+
+    private fun isValidSscc(sscc: String): Boolean {
+        if (sscc.length != 18) return false
+        val checkDigit = sscc.last().toString().toInt()
+        val payload = sscc.substring(0, 17)
+        var sum = 0
+        for ((index, char) in payload.withIndex()) {
+            val digit = char.toString().toInt()
+            sum += if (index % 2 == 0) digit * 3 else digit
+        }
+        val calculatedCheckDigit = (10 - (sum % 10)) % 10
+        return checkDigit == calculatedCheckDigit
     }
 }
 
