@@ -88,7 +88,9 @@ class MainActivity : ComponentActivity() {
                         CameraScreen(navController = navController)
                     } else {
                         Column(
-                            modifier = Modifier.fillMaxSize().safeDrawingPadding(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .safeDrawingPadding(),
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
@@ -96,10 +98,12 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                composable("result/{rawValue}") { backStackEntry ->
+                composable("result/{rawValue}/{type}") { backStackEntry ->
                     val rawValueEncoded = backStackEntry.arguments?.getString("rawValue") ?: ""
+                    val codeType = backStackEntry.arguments?.getString("type") ?: "Unknown"
                     val rawValue = URLDecoder.decode(rawValueEncoded, StandardCharsets.UTF_8.toString())
-                    BarcodeResultScreen(GS1Parser.parse(rawValue), rawValue)
+                    val formattedValue = rawValue.replace("<GS>", "\u001d")
+                    BarcodeResultScreen(GS1Parser.parse(formattedValue), rawValue, codeType)
                 }
             }
         }
@@ -144,11 +148,41 @@ fun CameraScreen(navController: NavController) {
                             .addOnSuccessListener { barcodes ->
                                 if (barcodes.isNotEmpty()) {
                                     val barcode = barcodes.first()
-                                    val rawValue = barcode.rawValue ?: ""
-                                    if (rawValue.isNotEmpty()) {
+                                    val rawBytes = barcode.rawBytes
+                                    if (rawBytes != null) {
                                         imageAnalysis.clearAnalyzer()
-                                        val encodedValue = URLEncoder.encode(rawValue, StandardCharsets.UTF_8.toString())
-                                        navController.navigate("result/$encodedValue")
+                                        var rawString = String(rawBytes, StandardCharsets.UTF_8)
+                                        rawString = rawString.replace("\u001d", "<GS>")
+
+                                        val prefix = when (barcode.format) {
+                                            Barcode.FORMAT_DATA_MATRIX -> {
+                                                // Prüfen, ob das erste Zeichen das GS-Steuerzeichen (ASCII 29) ist
+                                                if (rawBytes.isNotEmpty() && rawBytes[0].toInt() == 29) {
+                                                    "]d2" // GS1 DataMatrix
+                                                } else {
+                                                    "]d1" // Standard DataMatrix
+                                                }
+                                            }
+                                            Barcode.FORMAT_CODE_128 -> "]C1"
+                                            else -> ""
+                                        }
+
+                                        if (rawString.startsWith("<GS>")) {
+                                            rawString = rawString.substring(4)
+                                        }
+
+                                        // Falls der String noch nicht mit dem Präfix beginnt, vorne anstellen
+                                        val finalValue = if (prefix.isNotEmpty() && !rawString.startsWith(prefix)) {
+                                            prefix + rawString
+                                        } else {
+                                            rawString
+                                        }
+
+
+                                        val barcodeType = getBarcodeType(barcode.format, finalValue)
+
+                                        val encodedValue = URLEncoder.encode(finalValue, StandardCharsets.UTF_8.toString())
+                                        navController.navigate("result/$encodedValue/$barcodeType")
                                     }
                                 }
                             }
@@ -192,30 +226,34 @@ fun CameraScreen(navController: NavController) {
                 .padding(16.dp)
         ) {
             Text(
-                text = "Scan a barcode or use test value",
+                text = "Scan a barcode or use image",
                 color = Color.White,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
             )
-            Button(
-                onClick = {
-                    val testData = "]C1010123456789012317251231"
-                    val encodedValue = URLEncoder.encode(testData, StandardCharsets.UTF_8.toString())
-                    navController.navigate("result/$encodedValue")
-                },
-                modifier = Modifier
-                    .padding(top = 8.dp)
-                    .align(Alignment.CenterHorizontally)
-            ) {
-                Text("Use Test Value")
-            }
+            // Button(
+            //    onClick = {
+            //        val testData = "]C1010123456789012317251231"
+            //        val encodedValue = URLEncoder.encode(testData, StandardCharsets.UTF_8.toString())
+            //        navController.navigate("result/$encodedValue")
+            //    },
+            //    modifier = Modifier
+            //        .padding(top = 8.dp)
+            //        .align(Alignment.CenterHorizontally)
+            //) {
+            //    Text("Use Test Value")
+            //}
         }
     }
 }
 
 @Composable
-fun BarcodeResultScreen(scannedData: Map<String, String>, rawValue: String) {
-    Column(modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp)) {
+fun BarcodeResultScreen(scannedData: Map<String, String>, rawValue: String, codeType: String) {
+    Column(modifier = Modifier
+        .fillMaxSize()
+        .safeDrawingPadding()
+        .padding(16.dp)) {
+        Text("Code Type: $codeType")
         Text("Raw Value: $rawValue")
         scannedData.forEach { (ai, value) ->
             val (plausibility, message) = GS1Parser.checkPlausibility(ai, value)
@@ -237,13 +275,25 @@ fun isGS1Code(format: Int, rawValue: String): Boolean {
     }
 }
 
-fun getBarcodeType(format: Int): String {
+fun getBarcodeType(format: Int, rawValue: String): String {
     return when (format) {
-        Barcode.FORMAT_CODE_128 -> "Code 128"
+        Barcode.FORMAT_CODE_128 -> {
+            if (rawValue.isNotEmpty() && rawValue.startsWith("]C1")) {
+                "GS1-128" // GS1 DataMatrix
+            } else {
+                "Code-128" // Standard DataMatrix"Data Matrix"
+            }
+        }
         Barcode.FORMAT_CODE_39 -> "Code 39"
         Barcode.FORMAT_CODE_93 -> "Code 93"
         Barcode.FORMAT_CODABAR -> "Codabar"
-        Barcode.FORMAT_DATA_MATRIX -> "Data Matrix"
+        Barcode.FORMAT_DATA_MATRIX -> {
+            if (rawValue.isNotEmpty() && rawValue.startsWith("]d2")) {
+                "GS1-DataMatrix" // GS1 DataMatrix
+            } else {
+                "Datamatrix" // Standard DataMatrix"Data Matrix"
+            }
+        }
         Barcode.FORMAT_EAN_13 -> "EAN-13"
         Barcode.FORMAT_EAN_8 -> "EAN-8"
         Barcode.FORMAT_ITF -> "ITF"

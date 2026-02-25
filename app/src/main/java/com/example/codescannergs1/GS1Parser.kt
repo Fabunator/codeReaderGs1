@@ -26,7 +26,7 @@ object GS1Parser {
 
     fun parse(data: String): Map<String, String> {
         val parsedData = mutableMapOf<String, String>()
-        var remainingData = if (data.startsWith("]C1")) data.substring(3) else data
+        var remainingData = if (data.startsWith("]")) data.substring(3) else data
 
         while (remainingData.isNotEmpty()) {
             var foundAi = false
