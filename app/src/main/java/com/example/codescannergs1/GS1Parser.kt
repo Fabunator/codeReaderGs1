@@ -26,11 +26,16 @@ object GS1Parser {
 
     fun parse(data: String): Map<String, String> {
         val parsedData = mutableMapOf<String, String>()
-        var remainingData = if (data.startsWith("]")) data.substring(3) else data
+        
+        // Entferne AIM Identifier (z.B. ]d2, ]C1) oder führendes FNC1
+        var remainingData = when {
+            data.startsWith("]") && data.length >= 3 -> data.substring(3)
+            data.startsWith(FNC1) -> data.substring(1)
+            else -> data
+        }
 
         while (remainingData.isNotEmpty()) {
             var foundAi = false
-            // Iterate through possible AI lengths (3, 2)
             for (aiLength in 3 downTo 2) {
                 if (remainingData.length >= aiLength) {
                     val potentialAi = remainingData.substring(0, aiLength)
@@ -48,7 +53,7 @@ object GS1Parser {
             }
 
             if (!foundAi) {
-                Log.w("GS1Parser", "No matching AI found for: $remainingData")
+                Log.w("GS1Parser", "No matching AI found for remaining data: $remainingData")
                 if (remainingData.isNotEmpty()) {
                     parsedData["unknown"] = remainingData
                 }
@@ -60,9 +65,13 @@ object GS1Parser {
 
     private fun extractData(data: String, ai: AI): ExtractionResult {
         return if (ai.length > 0) { // Fixed length
-            val value = data.substring(0, ai.length)
-            val remaining = data.substring(ai.length)
-            ExtractionResult(value, remaining)
+            if (data.length >= ai.length) {
+                val value = data.substring(0, ai.length)
+                val remaining = data.substring(ai.length)
+                ExtractionResult(value, remaining)
+            } else {
+                ExtractionResult(data, "")
+            }
         } else { // Variable length
             val separatorIndex = data.indexOf(FNC1)
             if (separatorIndex != -1) {
@@ -70,37 +79,34 @@ object GS1Parser {
                 val remaining = data.substring(separatorIndex + 1)
                 ExtractionResult(value, remaining)
             } else {
-                // No separator, this is the last element
                 ExtractionResult(data, "")
             }
         }
     }
 
     fun checkPlausibility(ai: String, value: String): Pair<Boolean, String> {
-        val definition = aiDefinitions[ai]
-        if (definition == null) {
-            return Pair(false, "Unknown AI")
-        }
+        val definition = aiDefinitions[ai] ?: return Pair(false, "Unbekannter AI")
 
         when (definition.type) {
-            AIType.NUMERIC -> if (!value.all { it.isDigit() }) return Pair(false, "Value is not numeric")
-            AIType.ALPHANUMERIC -> if (!value.all { it.isLetterOrDigit() }) return Pair(false, "Value is not alphanumeric")
+            AIType.NUMERIC -> if (!value.all { it.isDigit() }) return Pair(false, "Nur Zahlen erlaubt")
+            AIType.ALPHANUMERIC -> if (value.isEmpty()) return Pair(false, "Wert ist leer")
             AIType.DATE -> {
-                if (!value.all { it.isDigit() }) return Pair(false, "Date is not numeric")
-                if (value.length != 6) return Pair(false, "Date must be 6 digits")
+                if (value.length != 6 || !value.all { it.isDigit() }) return Pair(false, "Datum muss JJMMTT sein")
                 try {
-                    val date = SimpleDateFormat("yyMMdd", Locale.US).parse(value)
-                    if (date == null) return Pair(false, "Invalid date format")
+                    val sdf = SimpleDateFormat("yyMMdd", Locale.US)
+                    sdf.isLenient = false
+                    sdf.parse(value)
                 } catch (e: Exception) {
-                    return Pair(false, "Invalid date format")
+                    return Pair(false, "Ungültiges Datum")
                 }
             }
         }
 
-        if (ai == "01" || ai == "02") { // GTIN
-            if (!isValidGtin(value)) return Pair(false, "Invalid GTIN check digit")
-        } else if (ai == "00") { // SSCC
-            if (!isValidSscc(value)) return Pair(false, "Invalid SSCC check digit")
+        // Prüfziffern-Checks
+        if (ai == "01" || ai == "02") {
+            if (!isValidGtin(value)) return Pair(false, "GTIN Prüfziffer falsch")
+        } else if (ai == "00") {
+            if (!isValidSscc(value)) return Pair(false, "SSCC Prüfziffer falsch")
         }
 
         return Pair(true, "OK")
@@ -108,28 +114,26 @@ object GS1Parser {
 
     private fun isValidGtin(gtin: String): Boolean {
         if (gtin.length != 14) return false
-        val checkDigit = gtin.last().toString().toInt()
-        val payload = gtin.substring(0, 13)
-        var sum = 0
-        for ((index, char) in payload.withIndex()) {
-            val digit = char.toString().toInt()
-            sum += if (index % 2 == 0) digit * 3 else digit
-        }
-        val calculatedCheckDigit = (10 - (sum % 10)) % 10
-        return checkDigit == calculatedCheckDigit
+        return checkLuhn(gtin)
     }
 
     private fun isValidSscc(sscc: String): Boolean {
         if (sscc.length != 18) return false
-        val checkDigit = sscc.last().toString().toInt()
-        val payload = sscc.substring(0, 17)
+        return checkLuhn(sscc)
+    }
+
+    private fun checkLuhn(code: String): Boolean {
+        val digits = code.map { it.toString().toInt() }
+        val checkDigit = digits.last()
+        val payload = digits.dropLast(1).reversed()
+        
         var sum = 0
-        for ((index, char) in payload.withIndex()) {
-            val digit = char.toString().toInt()
-            sum += if (index % 2 == 0) digit * 3 else digit
+        for ((i, digit) in payload.withIndex()) {
+            sum += if (i % 2 == 0) digit * 3 else digit
         }
-        val calculatedCheckDigit = (10 - (sum % 10)) % 10
-        return checkDigit == calculatedCheckDigit
+        
+        val calculated = (10 - (sum % 10)) % 10
+        return checkDigit == calculated
     }
 }
 

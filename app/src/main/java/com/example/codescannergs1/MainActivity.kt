@@ -27,7 +27,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -101,22 +106,28 @@ class MainActivity : ComponentActivity() {
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text("Requesting camera permission...")
+                            Text("Kameraberechtigung wird benötigt...")
                         }
                     }
                 }
                 composable("result/{rawValue}/{type}/{isGs1}") { backStackEntry ->
                     val rawValueEncoded = backStackEntry.arguments?.getString("rawValue") ?: ""
-                    val codeType = backStackEntry.arguments?.getString("type") ?: "Unknown"
+                    val codeType = backStackEntry.arguments?.getString("type") ?: "Unbekannt"
                     val isGs1Code = backStackEntry.arguments?.getString("isGs1")?.toBoolean() ?: false
+                    
                     val rawValue = URLDecoder.decode(rawValueEncoded, StandardCharsets.UTF_8.toString())
-                    val formattedValue = rawValue.replace("<GS>", "\u001d")
-                    if (isGs1Code) {
-                        BarcodeResultScreen(GS1Parser.parse(formattedValue), rawValue, codeType)
-                    } else {
-                        BarcodeResultScreen(mapOf(), rawValue, codeType)
-                    }
-
+                    // Für den Parser wandeln wir <GS> zurück in das Steuerzeichen
+                    val parserInput = rawValue.replace("<GS>", "\u001d")
+                    
+                    val parsedData = if (isGs1Code) GS1Parser.parse(parserInput) else emptyMap()
+                    
+                    BarcodeResultScreen(
+                        navController = navController,
+                        scannedData = parsedData,
+                        displayValue = rawValue,
+                        codeType = codeType,
+                        isGs1 = isGs1Code
+                    )
                 }
             }
         }
@@ -129,6 +140,7 @@ fun CameraScreen(navController: NavController) {
     val context = LocalContext.current
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+    
     val options = remember {
         BarcodeScannerOptions.Builder()
             .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
@@ -136,21 +148,19 @@ fun CameraScreen(navController: NavController) {
     }
     val scanner = remember { BarcodeScanning.getClient(options) }
 
-    fun processBarcodes(barcodes: List<Barcode>, clearAnalyzer: (() -> Unit)?) {
-        if (barcodes.isNotEmpty()) {
-            clearAnalyzer?.invoke()
-            val barcode = barcodes.first()
-            val rawBytes = barcode.rawBytes
-            if (rawBytes != null) {
-                val finalValue = getCodeString(rawBytes, barcode)
-                val barcodeType = getBarcodeType(barcode.format, finalValue)
-                val encodedValue = URLEncoder.encode(finalValue, StandardCharsets.UTF_8.toString())
-                val isGs1Code = isGS1Code(barcode.format, finalValue)
-                navController.navigate("result/$encodedValue/$barcodeType/$isGs1Code")
-            }
+    fun navigateToResult(barcode: Barcode) {
+        val rawBytes = barcode.rawBytes
+        val finalValue = if (rawBytes != null) {
+            getCodeString(rawBytes, barcode)
         } else {
-            Toast.makeText(context, "No barcode found in image", Toast.LENGTH_SHORT).show()
+            barcode.rawValue ?: ""
         }
+        
+        val barcodeType = getBarcodeType(barcode.format, finalValue)
+        val isGs1 = isGS1Code(barcode.format, finalValue)
+        val encodedValue = URLEncoder.encode(finalValue, StandardCharsets.UTF_8.toString())
+        
+        navController.navigate("result/$encodedValue/$barcodeType/$isGs1")
     }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -161,21 +171,23 @@ fun CameraScreen(navController: NavController) {
                     val image = InputImage.fromFilePath(context, uri)
                     scanner.process(image)
                         .addOnSuccessListener { barcodes ->
-                            processBarcodes(barcodes, null)
+                            if (barcodes.isNotEmpty()) {
+                                navigateToResult(barcodes.first())
+                            } else {
+                                Toast.makeText(context, "Kein Barcode im Bild gefunden", Toast.LENGTH_SHORT).show()
+                            }
                         }
                         .addOnFailureListener {
-                            Log.e("CameraScreen", "Error scanning image from gallery", it)
-                            Toast.makeText(context, "Error scanning image", Toast.LENGTH_SHORT).show()
+                            Log.e("CameraScreen", "Fehler beim Scan aus Galerie", it)
                         }
                 } catch (e: IOException) {
-                    Log.e("CameraScreen", "Error reading image", e)
-                    Toast.makeText(context, "Error reading image", Toast.LENGTH_SHORT).show()
+                    Log.e("CameraScreen", "Fehler beim Laden des Bildes", e)
                 }
             }
         }
     )
 
-    Box(modifier = Modifier.fillMaxSize()) { // Root Box for layering
+    Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
             factory = { ctx ->
                 val previewView = PreviewView(ctx).apply {
@@ -185,7 +197,9 @@ fun CameraScreen(navController: NavController) {
                 val selector = CameraSelector.Builder()
                     .requireLensFacing(CameraSelector.LENS_FACING_BACK)
                     .build()
+                
                 preview.surfaceProvider = previewView.surfaceProvider
+                
                 val imageAnalysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
@@ -197,11 +211,9 @@ fun CameraScreen(navController: NavController) {
                         scanner.process(processImage)
                             .addOnSuccessListener { barcodes ->
                                 if (barcodes.isNotEmpty()) {
-                                    processBarcodes(barcodes) { imageAnalysis.clearAnalyzer() }
+                                    imageAnalysis.clearAnalyzer()
+                                    navigateToResult(barcodes.first())
                                 }
-                            }
-                            .addOnFailureListener {
-                                Log.e("CameraScreen", "Error scanning barcodes", it)
                             }
                             .addOnCompleteListener {
                                 imageProxy.close()
@@ -220,32 +232,30 @@ fun CameraScreen(navController: NavController) {
                             imageAnalysis
                         )
                     } catch (e: Exception) {
-                        Log.e("CameraScreen", "Use case binding failed", e)
+                        Log.e("CameraScreen", "Binding failed", e)
                     }
                 }, ContextCompat.getMainExecutor(ctx))
-
 
                 previewView
             },
             modifier = Modifier.fillMaxSize()
         )
 
-        // Display test button at the bottom
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.5f))
+                .background(Color.Black.copy(alpha = 0.6f))
                 .safeDrawingPadding()
-                .padding(16.dp)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Scan a barcode or use image",
+                text = "Barcode scannen oder Bild wählen",
                 color = Color.White,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
+                fontWeight = FontWeight.Bold
             )
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(16.dp))
             Button(
                 onClick = {
                     imagePickerLauncher.launch(
@@ -254,99 +264,125 @@ fun CameraScreen(navController: NavController) {
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Select from Gallery")
+                Text("Galerie öffnen")
             }
         }
     }
 }
 
 @Composable
-fun BarcodeResultScreen(scannedData: Map<String, String>, rawValue: String, codeType: String) {
+fun BarcodeResultScreen(
+    navController: NavController,
+    scannedData: Map<String, String>,
+    displayValue: String,
+    codeType: String,
+    isGs1: Boolean
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .safeDrawingPadding()
+            .background(MaterialTheme.colorScheme.background)
             .padding(16.dp)
+            .verticalScroll(rememberScrollState())
     ) {
-        Text("Code Type: $codeType")
-        Text("Raw Value: $rawValue")
-        scannedData.forEach { (ai, value) ->
-            val (plausibility, message) = GS1Parser.checkPlausibility(ai, value)
-            Text("$ai: $value", color = if (plausibility) Color.Black else Color.Red)
-            if (!plausibility) {
-                Text(message, color = Color.Red)
+        Text(
+            text = "Scan Ergebnis",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Text(text = "Code Typ:", fontWeight = FontWeight.Bold)
+        Text(text = codeType, color = if (isGs1) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary)
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        Text(text = "Roh-Daten:", fontWeight = FontWeight.Bold)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.LightGray.copy(alpha = 0.2f))
+                .padding(8.dp)
+        ) {
+            Text(text = displayValue, style = MaterialTheme.typography.bodySmall)
+        }
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        if (isGs1) {
+            Text(text = "GS1 Aufschlüsselung:", fontWeight = FontWeight.Bold)
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            
+            scannedData.forEach { (ai, value) ->
+                val (plausibility, message) = GS1Parser.checkPlausibility(ai, value)
+                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                    Text(text = "AI ($ai):", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                    Text(text = value, style = MaterialTheme.typography.bodyLarge)
+                    if (!plausibility) {
+                        Text(text = "⚠ $message", color = Color.Red, style = MaterialTheme.typography.labelSmall)
+                    } else {
+                        Text(text = "✓ OK", color = Color(0xFF4CAF50), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
             }
+        } else {
+            Text(text = "Kein GS1-Standard erkannt.", color = Color.Gray)
+        }
+        
+        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Button(
+            onClick = { navController.popBackStack() },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Neu Scannen")
         }
     }
 }
 
 fun getCodeString(rawBytes: ByteArray, barcode: Barcode): String {
-    var rawString = String(rawBytes, StandardCharsets.UTF_8)
-    rawString = rawString.replace("\u001d", "<GS>")
+    val rawString = String(rawBytes, StandardCharsets.UTF_8)
+    
+    // Steuerzeichen für die Anzeige sichtbar machen
+    val displayValue = rawString.replace("\u001d", "<GS>")
 
-    val prefix = when (barcode.format) {
+    return when (barcode.format) {
         Barcode.FORMAT_DATA_MATRIX -> {
-            // Prüfen, ob das erste Zeichen das GS-Steuerzeichen (ASCII 29) ist
             if (rawBytes.isNotEmpty() && rawBytes[0].toInt() == 29) {
-                "]d2" // GS1 DataMatrix
+                if (displayValue.startsWith("<GS>")) "]d2" + displayValue.substring(4) else "]d2$displayValue"
             } else {
-                "]d1" // Standard DataMatrix
+                if (displayValue.startsWith("<GS>")) "]d1" + displayValue.substring(4) else "]d1$displayValue"
             }
         }
-        Barcode.FORMAT_CODE_128 -> "]C1"
-        else -> ""
-    }
+        Barcode.FORMAT_CODE_128 -> displayValue
 
-    if (rawString.startsWith("<GS>")) {
-        rawString = rawString.substring(4)
-    }
-
-    // Falls der String noch nicht mit dem Präfix beginnt, vorne anstellen
-    val finalValue = if (prefix.isNotEmpty() && !rawString.startsWith(prefix)) {
-        prefix + rawString
-    } else {
-        rawString
-    }
-    return finalValue
-}
-
-fun isGS1Code(format: Int, rawValue: String): Boolean {
-    return when (format) {
-        Barcode.FORMAT_CODE_128 -> rawValue.startsWith("]C1")
-        Barcode.FORMAT_DATA_MATRIX -> rawValue.startsWith("]d2")
-        Barcode.FORMAT_QR_CODE -> rawValue.contains(GS1Parser.FNC1)
-        Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8, Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E, Barcode.FORMAT_ITF -> true
-        else -> false
+        else -> displayValue
     }
 }
 
-fun getBarcodeType(format: Int, rawValue: String): String {
+fun isGS1Code(format: Int, value: String): Boolean {
+    return value.startsWith("]d2") || value.startsWith("]C1") || value.contains("<GS>")
+}
+
+fun getBarcodeType(format: Int, value: String): String {
     return when (format) {
-        Barcode.FORMAT_CODE_128 -> {
-            if (rawValue.isNotEmpty() && rawValue.startsWith("]C1")) {
-                "GS1-128"
-            } else {
-                "Code-128"
-            }
-        }
-        Barcode.FORMAT_CODE_39 -> "Code 39"
-        Barcode.FORMAT_CODE_93 -> "Code 93"
-        Barcode.FORMAT_CODABAR -> "Codebar"
-        Barcode.FORMAT_DATA_MATRIX -> {
-            if (rawValue.isNotEmpty() && rawValue.startsWith("]d2")) {
-                "GS1-DataMatrix"
-            } else {
-                "Datamatrix"
-            }
-        }
+        Barcode.FORMAT_CODE_128 -> if (value.startsWith("]C1")) "GS1-128" else "Code 128"
+        Barcode.FORMAT_DATA_MATRIX -> if (value.startsWith("]d2")) "GS1 DataMatrix" else "DataMatrix"
         Barcode.FORMAT_EAN_13 -> "EAN-13"
+        Barcode.FORMAT_QR_CODE -> "QR Code"
         Barcode.FORMAT_EAN_8 -> "EAN-8"
         Barcode.FORMAT_ITF -> "ITF"
-        Barcode.FORMAT_QR_CODE -> "QR Code"
         Barcode.FORMAT_UPC_A -> "UPC-A"
         Barcode.FORMAT_UPC_E -> "UPC-E"
         Barcode.FORMAT_PDF417 -> "PDF417"
         Barcode.FORMAT_AZTEC -> "Aztec"
-        else -> "Unknown"
+        Barcode.FORMAT_CODE_39 -> "Code 39"
+        Barcode.FORMAT_CODE_93 -> "Code 93"
+        Barcode.FORMAT_CODABAR -> "Codebar"
+        else -> "Format: $format"
     }
 }
