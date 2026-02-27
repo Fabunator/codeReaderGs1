@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
@@ -21,21 +22,31 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -44,7 +55,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -64,7 +74,6 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
 
-@androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -120,7 +129,7 @@ class MainActivity : ComponentActivity() {
                     val parserInput = rawValue.replace("<GS>", "\u001d")
                     
                     val parsedData = if (isGs1Code) GS1Parser.parse(parserInput) else emptyMap()
-                    
+
                     BarcodeResultScreen(
                         navController = navController,
                         scannedData = parsedData,
@@ -134,6 +143,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@androidx.annotation.OptIn(ExperimentalGetImage::class)
 @Composable
 fun CameraScreen(navController: NavController) {
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -141,6 +151,10 @@ fun CameraScreen(navController: NavController) {
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     
+    var camera by remember { mutableStateOf<Camera?>(null) }
+    var isFlashOn by remember { mutableStateOf(false) }
+    var zoomValue by remember { mutableFloatStateOf(0f) }
+
     val options = remember {
         BarcodeScannerOptions.Builder()
             .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
@@ -225,7 +239,7 @@ fun CameraScreen(navController: NavController) {
                     val cameraProvider = cameraProviderFuture.get()
                     try {
                         cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
+                        camera = cameraProvider.bindToLifecycle(
                             lifecycleOwner,
                             selector,
                             preview,
@@ -250,6 +264,45 @@ fun CameraScreen(navController: NavController) {
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Kamera-Steuerungen
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                IconButton(
+                    onClick = {
+                        isFlashOn = !isFlashOn
+                        camera?.cameraControl?.enableTorch(isFlashOn)
+                    },
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isFlashOn) Icons.Default.FlashOn else Icons.Filled.FlashOff,
+                        contentDescription = "Flash Toggle",
+                        tint = if (isFlashOn) Color.Yellow else Color.White
+                    )
+                }
+                
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Zoom", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Slider(
+                        value = zoomValue,
+                        onValueChange = {
+                            zoomValue = it
+                            camera?.cameraControl?.setLinearZoom(it)
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
             Text(
                 text = "Barcode scannen oder Bild wählen",
                 color = Color.White,
@@ -318,7 +371,7 @@ fun BarcodeResultScreen(
             scannedData.forEach { (ai, value) ->
                 val (plausibility, message) = GS1Parser.checkPlausibility(ai, value)
                 Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                    Text(text = "AI ($ai):", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                    Text(text = "AI ($ai): ${GS1Parser.aiDefinitions[ai]?.name ?: "Unbekannt"}", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                     Text(text = value, style = MaterialTheme.typography.bodyLarge)
                     if (!plausibility) {
                         Text(text = "⚠ $message", color = Color.Red, style = MaterialTheme.typography.labelSmall)
