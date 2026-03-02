@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -31,12 +32,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -64,6 +67,8 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -74,6 +79,13 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
 
+data class ScannedCode(
+    val rawValue: String,
+    val type: String,
+    val isGs1: Boolean
+)
+
+@ExperimentalGetImage
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -119,23 +131,16 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                composable("result/{rawValue}/{type}/{isGs1}") { backStackEntry ->
-                    val rawValueEncoded = backStackEntry.arguments?.getString("rawValue") ?: ""
-                    val codeType = backStackEntry.arguments?.getString("type") ?: "Unbekannt"
-                    val isGs1Code = backStackEntry.arguments?.getString("isGs1")?.toBoolean() ?: false
+                composable("result/{codesJson}") { backStackEntry ->
+                    val codesJsonEncoded = backStackEntry.arguments?.getString("codesJson") ?: ""
+                    val codesJson = URLDecoder.decode(codesJsonEncoded, StandardCharsets.UTF_8.toString())
                     
-                    val rawValue = URLDecoder.decode(rawValueEncoded, StandardCharsets.UTF_8.toString())
-                    // Für den Parser wandeln wir <GS> zurück in das Steuerzeichen
-                    val parserInput = rawValue.replace("<GS>", "\u001d")
+                    val listType = object : TypeToken<List<ScannedCode>>() {}.type
+                    val scannedCodes: List<ScannedCode> = Gson().fromJson(codesJson, listType)
                     
-                    val parsedData = if (isGs1Code) GS1Parser.parse(parserInput) else emptyMap()
-
                     BarcodeResultScreen(
                         navController = navController,
-                        scannedData = parsedData,
-                        displayValue = rawValue,
-                        codeType = codeType,
-                        isGs1 = isGs1Code
+                        scannedCodes = scannedCodes
                     )
                 }
             }
@@ -143,8 +148,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@androidx.annotation.OptIn(ExperimentalGetImage::class)
 @Composable
+@ExperimentalGetImage
 fun CameraScreen(navController: NavController) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
@@ -162,19 +167,25 @@ fun CameraScreen(navController: NavController) {
     }
     val scanner = remember { BarcodeScanning.getClient(options) }
 
-    fun navigateToResult(barcode: Barcode) {
-        val rawBytes = barcode.rawBytes
-        val finalValue = if (rawBytes != null) {
-            getCodeString(rawBytes, barcode)
-        } else {
-            barcode.rawValue ?: ""
+    fun navigateToResults(barcodes: List<Barcode>) {
+        val scannedCodes = barcodes.map { barcode ->
+            val rawBytes = barcode.rawBytes
+            val finalValue = if (rawBytes != null) {
+                getCodeString(rawBytes, barcode)
+            } else {
+                barcode.rawValue ?: ""
+            }
+            ScannedCode(
+                rawValue = finalValue,
+                type = getBarcodeType(barcode.format, finalValue),
+                isGs1 = isGS1Code(finalValue)
+            )
         }
         
-        val barcodeType = getBarcodeType(barcode.format, finalValue)
-        val isGs1 = isGS1Code(barcode.format, finalValue)
-        val encodedValue = URLEncoder.encode(finalValue, StandardCharsets.UTF_8.toString())
+        val codesJson = Gson().toJson(scannedCodes)
+        val encodedJson = URLEncoder.encode(codesJson, StandardCharsets.UTF_8.toString())
         
-        navController.navigate("result/$encodedValue/$barcodeType/$isGs1")
+        navController.navigate("result/$encodedJson")
     }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -186,16 +197,13 @@ fun CameraScreen(navController: NavController) {
                     scanner.process(image)
                         .addOnSuccessListener { barcodes ->
                             if (barcodes.isNotEmpty()) {
-                                navigateToResult(barcodes.first())
+                                navigateToResults(barcodes)
                             } else {
-                                Toast.makeText(context, "Kein Barcode im Bild gefunden", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Keine Barcodes gefunden", Toast.LENGTH_SHORT).show()
                             }
                         }
-                        .addOnFailureListener {
-                            Log.e("CameraScreen", "Fehler beim Scan aus Galerie", it)
-                        }
                 } catch (e: IOException) {
-                    Log.e("CameraScreen", "Fehler beim Laden des Bildes", e)
+                    Log.e("CameraScreen", "Fehler beim Laden", e)
                 }
             }
         }
@@ -226,7 +234,7 @@ fun CameraScreen(navController: NavController) {
                             .addOnSuccessListener { barcodes ->
                                 if (barcodes.isNotEmpty()) {
                                     imageAnalysis.clearAnalyzer()
-                                    navigateToResult(barcodes.first())
+                                    navigateToResults(barcodes)
                                 }
                             }
                             .addOnCompleteListener {
@@ -326,10 +334,7 @@ fun CameraScreen(navController: NavController) {
 @Composable
 fun BarcodeResultScreen(
     navController: NavController,
-    scannedData: Map<String, String>,
-    displayValue: String,
-    codeType: String,
-    isGs1: Boolean
+    scannedCodes: List<ScannedCode>
 ) {
     Column(
         modifier = Modifier
@@ -337,62 +342,60 @@ fun BarcodeResultScreen(
             .safeDrawingPadding()
             .background(MaterialTheme.colorScheme.background)
             .padding(16.dp)
-            .verticalScroll(rememberScrollState())
     ) {
         Text(
-            text = "Scan Ergebnis",
+            text = "Scan Ergebnisse (${scannedCodes.size})",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )
         
         Spacer(modifier = Modifier.height(16.dp))
         
-        Text(text = "Code Typ:", fontWeight = FontWeight.Bold)
-        Text(text = codeType, color = if (isGs1) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary)
-        
-        Spacer(modifier = Modifier.height(12.dp))
-        
-        Text(text = "Roh-Daten:", fontWeight = FontWeight.Bold)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.LightGray.copy(alpha = 0.2f))
-                .padding(8.dp)
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(text = displayValue, style = MaterialTheme.typography.bodySmall)
-        }
-        
-        Spacer(modifier = Modifier.height(24.dp))
-        
-        if (isGs1) {
-            Text(text = "GS1 Aufschlüsselung:", fontWeight = FontWeight.Bold)
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-            
-            scannedData.forEach { (ai, value) ->
-                val (plausibility, message) = GS1Parser.checkPlausibility(ai, value)
-                Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                    Text(text = "AI ($ai): ${GS1Parser.aiDefinitions[ai]?.name ?: "Unbekannt"}", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
-                    Text(text = value, style = MaterialTheme.typography.bodyLarge)
-                    if (!plausibility) {
-                        Text(text = "⚠ $message", color = Color.Red, style = MaterialTheme.typography.labelSmall)
-                    } else {
-                        Text(text = "✓ OK", color = Color(0xFF4CAF50), style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+            items(scannedCodes) { code ->
+                CodeResultItem(code)
             }
-        } else {
-            Text(text = "Kein GS1-Standard erkannt.", color = Color.Gray)
         }
-        
-        Spacer(modifier = Modifier.weight(1f))
-        Spacer(modifier = Modifier.height(24.dp))
         
         Button(
             onClick = { navController.popBackStack() },
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Neu Scannen")
+        }
+    }
+}
+
+@Composable
+fun CodeResultItem(code: ScannedCode) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(text = "Typ: ${code.type}", fontWeight = FontWeight.Bold, color = if (code.isGs1) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary)
+            Text(text = "Roh-Daten: ${code.rawValue}", style = MaterialTheme.typography.bodySmall)
+            
+            if (code.isGs1) {
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
+                val parserInput = code.rawValue.replace("<GS>", "\u001d")
+                val parsedData = GS1Parser.parse(parserInput)
+                
+                parsedData.forEach { (ai, value) ->
+                    val (plausibility, message) = GS1Parser.checkPlausibility(ai, value)
+                    Column(modifier = Modifier.padding(vertical = 2.dp)) {
+                        Text(text = "AI ($ai): ${GS1Parser.aiDefinitions[ai]?.name ?: "Unbekannt"}: $value", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                        if (!plausibility) {
+                            Text(text = "⚠ $message", color = Color.Red, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -417,7 +420,7 @@ fun getCodeString(rawBytes: ByteArray, barcode: Barcode): String {
     }
 }
 
-fun isGS1Code(format: Int, value: String): Boolean {
+fun isGS1Code(value: String): Boolean {
     return value.startsWith("]d2") || value.startsWith("]C1") || value.contains("<GS>")
 }
 
