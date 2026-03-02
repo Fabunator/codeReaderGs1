@@ -378,7 +378,7 @@ fun CodeResultItem(code: ScannedCode) {
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(text = "Typ: ${code.type}", fontWeight = FontWeight.Bold, color = if (code.isGs1) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary)
-            Text(text = "Roh-Daten: ${code.rawValue}", style = MaterialTheme.typography.bodySmall)
+            Text(text = "Roh-Daten: \n ${code.rawValue}", style = MaterialTheme.typography.bodySmall)
             
             if (code.isGs1) {
                 Spacer(modifier = Modifier.height(8.dp))
@@ -389,7 +389,7 @@ fun CodeResultItem(code: ScannedCode) {
                 parsedData.forEach { (ai, value) ->
                     val (plausibility, message) = GS1Parser.checkPlausibility(ai, value)
                     Column(modifier = Modifier.padding(vertical = 2.dp)) {
-                        Text(text = "AI ($ai): ${GS1Parser.aiDefinitions[ai]?.name ?: "Unbekannt"}: $value", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                        Text(text = "AI ($ai) ${GS1Parser.aiDefinitions[ai]?.name ?: "Unbekannt"}: \n$value", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                         if (!plausibility) {
                             Text(text = "⚠ $message", color = Color.Red, style = MaterialTheme.typography.labelSmall)
                         }
