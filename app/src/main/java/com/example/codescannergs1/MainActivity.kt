@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.util.Size
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -12,10 +13,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
@@ -55,8 +60,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -73,6 +82,8 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.io.IOException
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -153,6 +164,7 @@ class MainActivity : ComponentActivity() {
 fun CameraScreen(navController: NavController) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     
@@ -215,16 +227,39 @@ fun CameraScreen(navController: NavController) {
                 val previewView = PreviewView(ctx).apply {
                     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                 }
-                val preview = Preview.Builder().build()
+
+                val resolutionSelector = ResolutionSelector.Builder()
+                    // hohe Auflösung bevorzugen, falls verfügbar
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(1920, 1080),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                        )
+                    )
+                    // optional: Mindestverhältnis oder Größenbereich setzen
+                    .setAspectRatioStrategy(
+                        AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
+                    )
+                    .build()
+
+                val preview = Preview.Builder()
+                    .setResolutionSelector(resolutionSelector)
+                    .build()
+
                 val selector = CameraSelector.Builder()
                     .requireLensFacing(CameraSelector.LENS_FACING_BACK)
                     .build()
                 
                 preview.surfaceProvider = previewView.surfaceProvider
                 
+                // WICHTIG: Hier wird die Auflösung für die Analyse hochgeschraubt
                 val imageAnalysis = ImageAnalysis.Builder()
+                    .setResolutionSelector(resolutionSelector)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
+
+                val lastDetectedBarcodes = mutableListOf<Barcode>()
+                var lastDetectionTime = System.currentTimeMillis()
 
                 imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
                     val image = imageProxy.image
@@ -232,14 +267,38 @@ fun CameraScreen(navController: NavController) {
                         val processImage = InputImage.fromMediaImage(image, imageProxy.imageInfo.rotationDegrees)
                         scanner.process(processImage)
                             .addOnSuccessListener { barcodes ->
+                                var newCodeAdded = false
                                 if (barcodes.isNotEmpty()) {
+
+                                    barcodes.forEach { newBarcode ->
+
+                                        val alreadyExists = lastDetectedBarcodes.any {
+                                            it.rawValue == newBarcode.rawValue
+                                        }
+
+                                        if (!alreadyExists) {
+                                            lastDetectedBarcodes.add(newBarcode)
+                                            newCodeAdded = true
+                                        }
+
+                                        if (newCodeAdded) {
+                                            lastDetectionTime = System.currentTimeMillis()
+                                        }
+                                    }
+                                }
+
+                                if (lastDetectedBarcodes.isNotEmpty() &&
+                                    System.currentTimeMillis() - lastDetectionTime > 1000
+                                ) {
                                     imageAnalysis.clearAnalyzer()
-                                    navigateToResults(barcodes)
+                                    navigateToResults(lastDetectedBarcodes)
                                 }
                             }
                             .addOnCompleteListener {
                                 imageProxy.close()
                             }
+                    } else {
+                        imageProxy.close()
                     }
                 }
 
@@ -253,6 +312,17 @@ fun CameraScreen(navController: NavController) {
                             preview,
                             imageAnalysis
                         )
+
+                        camera?.cameraControl?.startFocusAndMetering(
+                            FocusMeteringAction.Builder(
+                                previewView.meteringPointFactory.createPoint(
+                                    previewView.width / 2f,
+                                    previewView.height / 2f
+                                )
+                            ).build()
+                        )
+
+                        camera?.cameraControl?.enableTorch(false)
                     } catch (e: Exception) {
                         Log.e("CameraScreen", "Binding failed", e)
                     }
@@ -370,6 +440,49 @@ fun BarcodeResultScreen(
     }
 }
 
+fun buildHighlightedGS1String(value: String, parsedData: Map<String, String>): AnnotatedString {
+    return buildAnnotatedString {
+
+        var i = 0
+
+        while (i < value.length) {
+
+            // <GS> hervorheben
+            if (value.startsWith("<GS>", i)) {
+                withStyle(
+                    SpanStyle(
+                        color = Color.Red,
+                        fontWeight = FontWeight.Bold
+                    )
+                ) {
+                    append("<GS>")
+                }
+                i += 4
+                continue
+            }
+            // AI erkennen (2–3 Ziffern am Anfang eines Segments)
+            parsedData.forEach { (ai, aiValue) ->
+                if (value[i].isDigit()) {
+                    if (value.startsWith(ai, i) &&value.startsWith(aiValue, i+ai.length)) {
+                        withStyle(
+                            SpanStyle(
+                                color = Color(0xFF4CAF50),
+                                fontWeight = FontWeight.Bold
+                            )
+                        ) {
+                            append(ai)
+                        }
+                        i += ai.length
+                        continue
+                    }
+                }
+            }
+            append(value[i])
+            i++
+        }
+    }
+}
+
 @Composable
 fun CodeResultItem(code: ScannedCode) {
     Card(
@@ -378,14 +491,19 @@ fun CodeResultItem(code: ScannedCode) {
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(text = "Typ: ${code.type}", fontWeight = FontWeight.Bold, color = if (code.isGs1) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary)
-            Text(text = "Roh-Daten: \n ${code.rawValue}", style = MaterialTheme.typography.bodySmall)
-            
+
             if (code.isGs1) {
-                Spacer(modifier = Modifier.height(8.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
                 val parserInput = code.rawValue.replace("<GS>", "\u001d")
                 val parsedData = GS1Parser.parse(parserInput)
-                
+                Text(
+                    text = buildAnnotatedString {
+                        append("Roh-Daten:\n")
+                        append(buildHighlightedGS1String(code.rawValue, parsedData))
+                    },
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
                 parsedData.forEach { (ai, value) ->
                     val (plausibility, message) = GS1Parser.checkPlausibility(ai, value)
                     Column(modifier = Modifier.padding(vertical = 2.dp)) {
@@ -395,6 +513,9 @@ fun CodeResultItem(code: ScannedCode) {
                         }
                     }
                 }
+            }
+            else {
+                Text(text = "Roh-Daten: \n ${code.rawValue}", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
