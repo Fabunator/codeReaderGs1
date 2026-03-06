@@ -39,12 +39,12 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -142,8 +142,6 @@ class MainActivity : ComponentActivity() {
                 window.decorView.setBackgroundColor(
                     if (isDarkThemeEnabled) AndroidColor.BLACK else AndroidColor.WHITE
                 )
-                window.statusBarColor = AndroidColor.TRANSPARENT
-                window.navigationBarColor = AndroidColor.TRANSPARENT
                 WindowCompat.getInsetsController(window, window.decorView).apply {
                     isAppearanceLightStatusBars = !isDarkThemeEnabled
                     isAppearanceLightNavigationBars = !isDarkThemeEnabled
@@ -446,15 +444,23 @@ fun BarcodeResultScreen(
             .fillMaxSize()
             .safeDrawingPadding()
             .background(MaterialTheme.colorScheme.background)
-            .padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 45.dp),
+            .padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 12.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            IconButton(onClick = { navController.popBackStack() }) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Zurueck",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
+
             Text(
                 text = "Scan Ergebnisse (${scannedCodes.size})",
+                modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onBackground
@@ -466,26 +472,18 @@ fun BarcodeResultScreen(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
-        
+
         LazyColumn(
             modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(bottom = 45.dp),
+            contentPadding = PaddingValues(bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(scannedCodes) { code ->
                 CodeResultItem(code)
             }
         }
-        
-        Button(
-            onClick = { navController.popBackStack() },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Neu Scannen")
-        }
     }
 }
-
 fun buildHighlightedGS1String(value: String, parsedData: Map<String, String>): AnnotatedString {
     return buildAnnotatedString {
 
@@ -540,20 +538,22 @@ fun CodeResultItem(code: ScannedCode) {
 
             if (code.isGs1) {
                 val parserInput = code.rawValue.replace("<GS>", "\u001d")
-                val parsedData = GS1Parser.parse(parserInput)
+                val parsedDataRaw = GS1Parser.parse(parserInput, formatDatesForDisplay = false)
+                val parsedData = GS1Parser.parse(parserInput, formatDatesForDisplay = true)
                 Text(
                     text = buildAnnotatedString {
                         append("Roh-Daten:\n")
-                        append(buildHighlightedGS1String(code.rawValue, parsedData))
+                        append(buildHighlightedGS1String(code.rawValue, parsedDataRaw))
                     },
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
                 parsedData.forEach { (ai, value) ->
-                    val (plausibility, message) = GS1Parser.checkPlausibility(ai, value)
+                    val rawValue = parsedDataRaw[ai] ?: value
+                    val (plausibility, message) = GS1Parser.checkPlausibility(ai, rawValue)
                     Column(modifier = Modifier.padding(vertical = 2.dp)) {
-                        Text(text = "AI ($ai) ${GS1Parser.aiDefinitions[ai]?.name ?: "Unbekannt"}: \n$value", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                        Text(text = "($ai) ${GS1Parser.aiDefinitions[ai]?.name ?: "Unbekannt"}: \n$value", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                         if (!plausibility) {
                             Text(text = "⚠ $message", color = Color.Red, style = MaterialTheme.typography.labelSmall)
                         }
@@ -609,4 +609,10 @@ fun getBarcodeType(format: Int, value: String): String {
         else -> "Format: $format"
     }
 }
+
+
+
+
+
+
 

@@ -78,7 +78,7 @@ object GS1Parser {
     // FNC1 separator character
     internal const val FNC1 = '\u001d'
 
-    fun parse(data: String): Map<String, String> {
+    fun parse(data: String, formatDatesForDisplay: Boolean = true): Map<String, String> {
         val parsedData = mutableMapOf<String, String>()
         
         // Entferne AIM Identifier (z.B. ]d2, ]C1) oder führendes FNC1
@@ -98,7 +98,7 @@ object GS1Parser {
                         val dataField = remainingData.substring(aiLength)
                         val result = extractData(dataField, ai)
 
-                        parsedData[potentialAi] = result.value
+                        parsedData[potentialAi] = if (ai.type == AIType.DATE && formatDatesForDisplay) formatDateForDisplay(result.value) else result.value
                         remainingData = result.remainingData
                         foundAi = true
                         break
@@ -137,7 +137,17 @@ object GS1Parser {
             }
         }
     }
-
+    private fun formatDateForDisplay(rawDate: String): String {
+        if (rawDate.length != 6 || !rawDate.all { it.isDigit() }) return rawDate
+        return try {
+            val parser = SimpleDateFormat("yyMMdd", Locale.US).apply { isLenient = false }
+            val parsed = parser.parse(rawDate) ?: return rawDate
+            val formatter = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+            formatter.format(parsed)
+        } catch (_: Exception) {
+            rawDate
+        }
+    }
     fun checkPlausibility(ai: String, value: String): Pair<Boolean, String> {
         val definition = aiDefinitions[ai] ?: return Pair(false, "Unbekannter AI")
 
@@ -199,3 +209,5 @@ object GS1Parser {
 internal data class AI(val length: Int, val minLength: Int, val maxLength: Int, val type: AIType, val name: String? = "NONE")
 internal enum class AIType { NUMERIC, ALPHANUMERIC, DATE }
 private data class ExtractionResult(val value: String, val remainingData: String)
+
+
