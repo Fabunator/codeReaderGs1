@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Code Scanner GS1</string>
+
+    <string name="camera_permission_required">Kameraberechtigung wird benötigt...</string>
+    <string name="no_barcodes_found">Keine Barcodes gefunden</string>
+    <string name="history_desc">Verlauf</string>
+    <string name="open_gallery_desc">Galerie öffnen</string>
+    <string name="zoom_label">Zoom</string>
+    <string name="flash_toggle_desc">Blitz umschalten</string>
+    <string name="back_desc">Zurück</string>
+
+    <string name="scan_results_title">Scan Ergebnisse (%1$d/%2$d)</string>
+    <string name="search_label">Suchen (Typ oder Inhalt)</string>
+    <string name="filter_all">Alle</string>
+    <string name="filter_gs1_only">Nur GS1</string>
+    <string name="filter_no_gs1">Ohne GS1</string>
+    <string name="no_results_for_filter">Keine Ergebnisse für die aktuelle Suche/Filter.</string>
+
+    <string name="type_label">Typ: %1$s</string>
+    <string name="code_copied">Code kopiert</string>
+    <string name="copy_code_desc">Code kopieren</string>
+    <string name="share_code_desc">Code teilen</string>
+    <string name="share_code_chooser">Code teilen</string>
+    <string name="raw_data_label">Roh-Daten:</string>
+    <string name="unknown_label">Unbekannt</string>
+    <string name="ai_value_copied">AI-Wert kopiert</string>
+    <string name="copy_ai_value_desc">AI-Wert kopieren</string>
+    <string name="warning_prefix">Warnung: %1$s</string>
+    <string name="raw_data_value">Roh-Daten:\n %1$s</string>
+    <string name="ai_line">(%1$s) %2$s:\n%3$s</string>
+
+    <string name="history_clear_title">Verlauf löschen</string>
+    <string name="history_clear_message">Sollen wirklich alle Einträge im Verlauf gelöscht werden?</string>
+    <string name="history_cleared">Verlauf gelöscht</string>
+    <string name="delete">Löschen</string>
+    <string name="cancel">Abbrechen</string>
+    <string name="history_title">Scan-Verlauf (%1$d)</string>
+    <string name="export_csv">Export CSV</string>
+    <string name="export_json">Export JSON</string>
+    <string name="history_empty">Noch kein Verlauf vorhanden.</string>
+    <string name="history_entry_deleted">Eintrag gelöscht</string>
+    <string name="delete_entry_desc">Eintrag löschen</string>
+    <string name="history_entry_summary">%1$s - %2$d Codes</string>
+    <string name="nothing_to_export">Nichts zu exportieren</string>
+    <string name="share_export_chooser">Export teilen</string>
+
+    <string name="plausibility_length_detected">Länge unplausibel: erkannt %1$d Zeichen.</string>
+    <string name="plausibility_length_expected_fixed">Länge unplausibel: erwartet %1$d, erkannt %2$d.</string>
+    <string name="plausibility_length_expected_range">Länge unplausibel: erwartet %1$d-%2$d, erkannt %3$d.</string>
+    <string name="plausibility_digits_only">Nur Ziffern erlaubt. Bitte auf Sonderzeichen achten.</string>
+    <string name="plausibility_date_format">Datumsformat ungültig. Erwartet JJMMTT (z.B. 260822).</string>
+    <string name="plausibility_date_invalid">Datum ist kalendarisch ungültig (JJMMTT).</string>
+    <string name="plausibility_checksum_invalid">Prüfziffer ungültig. Code ist evtl. unvollständig oder falsch gescannt.</string>
+</resources>

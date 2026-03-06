@@ -83,6 +83,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -194,7 +195,7 @@ class MainActivity : ComponentActivity() {
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text("Kameraberechtigung wird benötigt...")
+                            Text(stringResource(R.string.camera_permission_required))
                         }
                     }
                 }
@@ -281,7 +282,7 @@ fun CameraScreen(
                             if (barcodes.isNotEmpty()) {
                                 navigateToResults(barcodes)
                             } else {
-                                Toast.makeText(context, "Keine Barcodes gefunden", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.no_barcodes_found), Toast.LENGTH_SHORT).show()
                             }
                         }
                 } catch (e: IOException) {
@@ -417,7 +418,7 @@ fun CameraScreen(
         ) {
             Icon(
                 imageVector = Icons.Filled.History,
-                contentDescription = "Verlauf",
+                contentDescription = stringResource(R.string.history_desc),
                 tint = Color.White
             )
         }
@@ -447,7 +448,7 @@ fun CameraScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Filled.PhotoLibrary,
-                        contentDescription = "Galerie öffnen",
+                        contentDescription = stringResource(R.string.open_gallery_desc),
                         tint = Color.White
                     )
                 }
@@ -456,7 +457,7 @@ fun CameraScreen(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Zoom", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    Text(stringResource(R.string.zoom_label), color = Color.White, style = MaterialTheme.typography.labelSmall)
                     Spacer(modifier = Modifier.width(8.dp))
                     Slider(
                         value = zoomValue,
@@ -477,7 +478,7 @@ fun CameraScreen(
                 ) {
                     Icon(
                         imageVector = if (isFlashOn) Icons.Default.FlashOn else Icons.Filled.FlashOff,
-                        contentDescription = "Flash Toggle",
+                        contentDescription = stringResource(R.string.flash_toggle_desc),
                         tint = if (isFlashOn) Color.Yellow else Color.White
                     )
                 }
@@ -535,13 +536,13 @@ fun BarcodeResultScreen(
             }) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Zurueck",
+                    contentDescription = stringResource(R.string.back_desc),
                     tint = MaterialTheme.colorScheme.onBackground
                 )
             }
 
             Text(
-                text = "Scan Ergebnisse (${filteredCodes.size}/${scannedCodes.size})",
+                text = stringResource(R.string.scan_results_title, filteredCodes.size, scannedCodes.size),
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
@@ -555,7 +556,7 @@ fun BarcodeResultScreen(
             }) {
                 Icon(
                     imageVector = Icons.Filled.History,
-                    contentDescription = "Verlauf",
+                    contentDescription = stringResource(R.string.history_desc),
                     tint = MaterialTheme.colorScheme.onBackground
                 )
             }
@@ -570,7 +571,7 @@ fun BarcodeResultScreen(
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
-            label = { Text("Suchen (Typ oder Inhalt)") },
+            label = { Text(stringResource(R.string.search_label)) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
@@ -584,17 +585,17 @@ fun BarcodeResultScreen(
             FilterChip(
                 selected = filter == ResultFilter.ALL,
                 onClick = { filter = ResultFilter.ALL },
-                label = { Text("Alle") }
+                label = { Text(stringResource(R.string.filter_all)) }
             )
             FilterChip(
                 selected = filter == ResultFilter.GS1_ONLY,
                 onClick = { filter = ResultFilter.GS1_ONLY },
-                label = { Text("Nur GS1") }
+                label = { Text(stringResource(R.string.filter_gs1_only)) }
             )
             FilterChip(
                 selected = filter == ResultFilter.NON_GS1,
                 onClick = { filter = ResultFilter.NON_GS1 },
-                label = { Text("Ohne GS1") }
+                label = { Text(stringResource(R.string.filter_no_gs1)) }
             )
         }
 
@@ -602,7 +603,7 @@ fun BarcodeResultScreen(
 
         if (filteredCodes.isEmpty()) {
             Text(
-                text = "Keine Ergebnisse fuer die aktuelle Suche/Filter.",
+                text = stringResource(R.string.no_results_for_filter),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -663,22 +664,22 @@ fun buildHighlightedGS1String(value: String, parsedData: Map<String, String>): A
     }
 }
 
-private fun buildPlausibilityHint(ai: String, value: String, parserMessage: String): String {
+private fun buildPlausibilityHint(context: android.content.Context, ai: String, value: String, parserMessage: String): String {
     val definition = GS1Parser.aiDefinitions[ai]
     return when {
         parserMessage.contains("falsche") && parserMessage.contains("L") -> {
             if (definition == null) {
-                "Laenge unplausibel: erkannt ${value.length} Zeichen."
+                context.getString(R.string.plausibility_length_detected, value.length)
             } else if (definition.minLength == definition.maxLength) {
-                "Laenge unplausibel: erwartet ${definition.minLength}, erkannt ${value.length}."
+                context.getString(R.string.plausibility_length_expected_fixed, definition.minLength, value.length)
             } else {
-                "Laenge unplausibel: erwartet ${definition.minLength}-${definition.maxLength}, erkannt ${value.length}."
+                context.getString(R.string.plausibility_length_expected_range, definition.minLength, definition.maxLength, value.length)
             }
         }
-        parserMessage.contains("Nur Zahlen") -> "Nur Ziffern erlaubt. Bitte auf Sonderzeichen achten."
-        parserMessage.contains("Datum muss") -> "Datumsformat ungueltig. Erwartet JJMMTT (z.B. 260822)."
-        parserMessage.contains("Ung") && parserMessage.contains("Datum") -> "Datum ist kalendarisch ungueltig (JJMMTT)."
-        parserMessage.contains("Pr") && parserMessage.contains("ziffer") -> "Pruefziffer ungueltig. Code ist evtl. unvollstaendig oder falsch gescannt."
+        parserMessage.contains("Nur Zahlen") -> context.getString(R.string.plausibility_digits_only)
+        parserMessage.contains("Datum muss") -> context.getString(R.string.plausibility_date_format)
+        parserMessage.contains("Ung") && parserMessage.contains("Datum") -> context.getString(R.string.plausibility_date_invalid)
+        parserMessage.contains("Pr") && parserMessage.contains("ziffer") -> context.getString(R.string.plausibility_checksum_invalid)
         else -> parserMessage
     }
 }
@@ -698,7 +699,7 @@ fun CodeResultItem(code: ScannedCode) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Typ: ${code.type}",
+                    text = stringResource(R.string.type_label, code.type),
                     modifier = Modifier.weight(1f),
                     fontWeight = FontWeight.Bold,
                     color = if (code.isGs1) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary
@@ -706,10 +707,10 @@ fun CodeResultItem(code: ScannedCode) {
                 IconButton(
                     onClick = {
                         clipboardManager.setText(AnnotatedString(code.rawValue))
-                        Toast.makeText(context, "Code kopiert", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.code_copied), Toast.LENGTH_SHORT).show()
                     }
                 ) {
-                    Icon(imageVector = Icons.Filled.ContentCopy, contentDescription = "Code kopieren")
+                    Icon(imageVector = Icons.Filled.ContentCopy, contentDescription = stringResource(R.string.copy_code_desc))
                 }
                 IconButton(
                     onClick = {
@@ -717,10 +718,10 @@ fun CodeResultItem(code: ScannedCode) {
                             type = "text/plain"
                             putExtra(Intent.EXTRA_TEXT, "${code.type}: ${code.rawValue}")
                         }
-                        context.startActivity(Intent.createChooser(shareIntent, "Code teilen"))
+                        context.startActivity(Intent.createChooser(shareIntent, context.getString(R.string.share_code_chooser)))
                     }
                 ) {
-                    Icon(imageVector = Icons.Filled.Share, contentDescription = "Code teilen")
+                    Icon(imageVector = Icons.Filled.Share, contentDescription = stringResource(R.string.share_code_desc))
                 }
             }
 
@@ -730,7 +731,7 @@ fun CodeResultItem(code: ScannedCode) {
                 val parsedData = GS1Parser.parse(parserInput, formatDatesForDisplay = true)
                 Text(
                     text = buildAnnotatedString {
-                        append("Roh-Daten:\n")
+                        append(stringResource(R.string.raw_data_label) + "\n")
                         append(buildHighlightedGS1String(code.rawValue, parsedDataRaw))
                     },
                     style = MaterialTheme.typography.bodySmall
@@ -740,7 +741,7 @@ fun CodeResultItem(code: ScannedCode) {
                 parsedData.forEach { (ai, displayValue) ->
                     val rawValue = parsedDataRaw[ai] ?: displayValue
                     val (plausibility, message) = GS1Parser.checkPlausibility(ai, rawValue)
-                    val warningHint = buildPlausibilityHint(ai, rawValue, message)
+                    val warningHint = buildPlausibilityHint(context, ai, rawValue, message)
 
                     Column(modifier = Modifier.padding(vertical = 2.dp)) {
                         Row(
@@ -748,7 +749,7 @@ fun CodeResultItem(code: ScannedCode) {
                             verticalAlignment = Alignment.Top
                         ) {
                             Text(
-                                text = "($ai) ${GS1Parser.aiDefinitions[ai]?.name ?: "Unbekannt"}:\n$displayValue",
+                                text = stringResource(R.string.ai_line, ai, GS1Parser.aiDefinitions[ai]?.name ?: stringResource(R.string.unknown_label), displayValue),
                                 modifier = Modifier.weight(1f),
                                 fontWeight = FontWeight.SemiBold,
                                 style = MaterialTheme.typography.bodyMedium
@@ -756,18 +757,18 @@ fun CodeResultItem(code: ScannedCode) {
                             IconButton(
                                 onClick = {
                                     clipboardManager.setText(AnnotatedString(displayValue))
-                                    Toast.makeText(context, "AI-Wert kopiert", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, context.getString(R.string.ai_value_copied), Toast.LENGTH_SHORT).show()
                                 }
                             ) {
                                 Icon(
                                     imageVector = Icons.Filled.ContentCopy,
-                                    contentDescription = "AI-Wert kopieren"
+                                    contentDescription = stringResource(R.string.copy_ai_value_desc)
                                 )
                             }
                         }
                         if (!plausibility) {
                             Text(
-                                text = "Warnung: $warningHint",
+                                text = stringResource(R.string.warning_prefix, warningHint),
                                 color = Color.Red,
                                 style = MaterialTheme.typography.labelSmall
                             )
@@ -775,7 +776,7 @@ fun CodeResultItem(code: ScannedCode) {
                     }
                 }
             } else {
-                Text(text = "Roh-Daten: \n ${code.rawValue}", style = MaterialTheme.typography.bodySmall)
+                Text(text = stringResource(R.string.raw_data_value, code.rawValue), style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -790,21 +791,21 @@ fun ScanHistoryScreen(navController: NavController) {
     if (showClearAllDialog) {
         AlertDialog(
             onDismissRequest = { showClearAllDialog = false },
-            title = { Text("Verlauf löschen") },
-            text = { Text("Sollen wirklich alle Einträge im Verlauf gelöscht werden?") },
+            title = { Text(stringResource(R.string.history_clear_title)) },
+            text = { Text(stringResource(R.string.history_clear_message)) },
             confirmButton = {
                 TextButton(onClick = {
                     clearHistory(context)
                     history = emptyList()
                     showClearAllDialog = false
-                    Toast.makeText(context, "Verlauf gelöscht", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.history_cleared), Toast.LENGTH_SHORT).show()
                 }) {
-                    Text("Löschen")
+                    Text(stringResource(R.string.delete))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showClearAllDialog = false }) {
-                    Text("Abbrechen")
+                    Text(stringResource(R.string.cancel))
                 }
             }
         )
@@ -829,12 +830,12 @@ fun ScanHistoryScreen(navController: NavController) {
             }) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Zurueck",
+                    contentDescription = stringResource(R.string.back_desc),
                     tint = MaterialTheme.colorScheme.onBackground
                 )
             }
             Text(
-                text = "Scan-Verlauf (${history.size})",
+                text = stringResource(R.string.history_title, history.size),
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
@@ -852,18 +853,18 @@ fun ScanHistoryScreen(navController: NavController) {
                 val csv = historyToCsv(history)
                 shareExport(context, csv, "text/csv", "scan_verlauf.csv")
             }) {
-                Text("Export CSV")
+                Text(stringResource(R.string.export_csv))
             }
             Button(onClick = {
                 val json = Gson().toJson(history)
                 shareExport(context, json, "application/json", "scan_verlauf.json")
             }) {
-                Text("Export JSON")
+                Text(stringResource(R.string.export_json))
             }
             Button(onClick = {
                 showClearAllDialog = true
             }) {
-                Text("Löschen")
+                Text(stringResource(R.string.delete))
             }
         }
 
@@ -871,7 +872,7 @@ fun ScanHistoryScreen(navController: NavController) {
 
         if (history.isEmpty()) {
             Text(
-                text = "Noch kein Verlauf vorhanden.",
+                text = stringResource(R.string.history_empty),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
@@ -892,7 +893,7 @@ fun ScanHistoryScreen(navController: NavController) {
                         },
                         onDelete = {
                             history = removeHistoryEntry(context, entry)
-                            Toast.makeText(context, "Eintrag geloescht", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, context.getString(R.string.history_entry_deleted), Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
@@ -938,7 +939,7 @@ private fun DismissibleHistoryEntry(
             ) {
                 Icon(
                     imageVector = Icons.Filled.Delete,
-                    contentDescription = "Eintrag löschen",
+                    contentDescription = stringResource(R.string.delete_entry_desc),
                     tint = Color.White
                 )
             }
@@ -950,7 +951,7 @@ private fun DismissibleHistoryEntry(
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
-                        text = "$timeText - ${entry.codes.size} Codes",
+                        text = stringResource(R.string.history_entry_summary, timeText, entry.codes.size),
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(6.dp))
@@ -1034,7 +1035,7 @@ private fun shareExport(
     fileName: String
 ) {
     if (content.isBlank()) {
-        Toast.makeText(context, "Nichts zu exportieren", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.nothing_to_export), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -1048,7 +1049,7 @@ private fun shareExport(
         putExtra(Intent.EXTRA_STREAM, uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
-    context.startActivity(Intent.createChooser(intent, "Export teilen"))
+    context.startActivity(Intent.createChooser(intent, context.getString(R.string.share_export_chooser)))
 }
 fun getCodeString(rawBytes: ByteArray, barcode: Barcode): String {
     val rawString = String(rawBytes, StandardCharsets.UTF_8)
@@ -1092,6 +1093,10 @@ fun getBarcodeType(format: Int, value: String): String {
         else -> "Format: $format"
     }
 }
+
+
+
+
 
 
 
