@@ -47,12 +47,17 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,7 +65,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -71,6 +80,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -82,6 +92,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -99,10 +110,13 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
 import java.io.IOException
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -110,6 +124,11 @@ data class ScannedCode(
     val rawValue: String,
     val type: String,
     val isGs1: Boolean
+)
+
+data class ScanHistoryEntry(
+    val timestamp: Long,
+    val codes: List<ScannedCode>
 )
 
 enum class ResultFilter { ALL, GS1_ONLY, NON_GS1 }
@@ -179,13 +198,14 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                composable("result/{codesJson}") { backStackEntry ->
+                                composable("result/{codesJson}/{fromHistory}") { backStackEntry ->
                     val codesJsonEncoded = backStackEntry.arguments?.getString("codesJson") ?: ""
                     val codesJson = URLDecoder.decode(codesJsonEncoded, StandardCharsets.UTF_8.toString())
-                    
+
                     val listType = object : TypeToken<List<ScannedCode>>() {}.type
                     val scannedCodes: List<ScannedCode> = Gson().fromJson(codesJson, listType)
-                    
+                    val fromHistory = backStackEntry.arguments?.getString("fromHistory")?.toBoolean() ?: false
+
                     BarcodeResultScreen(
                         navController = navController,
                         scannedCodes = scannedCodes,
@@ -193,8 +213,12 @@ class MainActivity : ComponentActivity() {
                         onDarkThemeToggle = { isEnabled ->
                             isDarkThemeEnabled = isEnabled
                             preferences.edit().putBoolean(darkModeKey, isEnabled).apply()
-                        }
+                        },
+                        fromHistory = fromHistory
                     )
+                }
+                composable("history") {
+                    ScanHistoryScreen(navController = navController)
                 }
             }
         }
@@ -239,10 +263,11 @@ fun CameraScreen(
             )
         }
         
+        appendHistoryEntry(context, scannedCodes)
         val codesJson = Gson().toJson(scannedCodes)
         val encodedJson = URLEncoder.encode(codesJson, StandardCharsets.UTF_8.toString())
         
-        navController.navigate("result/$encodedJson")
+        navController.navigate("result/$encodedJson/false")
     }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -379,6 +404,24 @@ fun CameraScreen(
             modifier = Modifier.fillMaxSize()
         )
 
+        IconButton(
+            onClick = {
+                navController.navigate("history") {
+                    launchSingleTop = true
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .safeDrawingPadding()
+                .padding(top = 8.dp, end = 8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.History,
+                contentDescription = "Verlauf",
+                tint = Color.White
+            )
+        }
+
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -448,7 +491,8 @@ fun BarcodeResultScreen(
     navController: NavController,
     scannedCodes: List<ScannedCode>,
     isDarkThemeEnabled: Boolean,
-    onDarkThemeToggle: (Boolean) -> Unit
+    onDarkThemeToggle: (Boolean) -> Unit,
+    fromHistory: Boolean
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(ResultFilter.ALL) }
@@ -479,7 +523,16 @@ fun BarcodeResultScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = { navController.popBackStack() }) {
+            IconButton(onClick = {
+                if (fromHistory) {
+                    navController.popBackStack()
+                } else {
+                    navController.navigate("camera") {
+                        popUpTo("camera") { inclusive = false }
+                        launchSingleTop = true
+                    }
+                }
+            }) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Zurueck",
@@ -494,6 +547,18 @@ fun BarcodeResultScreen(
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onBackground
             )
+            IconButton(onClick = {
+                navController.navigate("history") {
+                    popUpTo("camera") { inclusive = false }
+                    launchSingleTop = true
+                }
+            }) {
+                Icon(
+                    imageVector = Icons.Filled.History,
+                    contentDescription = "Verlauf",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
             Switch(
                 checked = isDarkThemeEnabled,
                 onCheckedChange = onDarkThemeToggle
@@ -716,6 +781,275 @@ fun CodeResultItem(code: ScannedCode) {
     }
 }
 
+@Composable
+fun ScanHistoryScreen(navController: NavController) {
+    val context = LocalContext.current
+    var history by remember { mutableStateOf(loadHistory(context)) }
+    var showClearAllDialog by remember { mutableStateOf(false) }
+
+    if (showClearAllDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearAllDialog = false },
+            title = { Text("Verlauf löschen") },
+            text = { Text("Sollen wirklich alle Einträge im Verlauf gelöscht werden?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    clearHistory(context)
+                    history = emptyList()
+                    showClearAllDialog = false
+                    Toast.makeText(context, "Verlauf gelöscht", Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("Löschen")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearAllDialog = false }) {
+                    Text("Abbrechen")
+                }
+            }
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .safeDrawingPadding()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = {
+                navController.navigate("camera") {
+                    popUpTo("camera") { inclusive = false }
+                    launchSingleTop = true
+                }
+            }) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Zurueck",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
+            Text(
+                text = "Scan-Verlauf (${history.size})",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(onClick = {
+                val csv = historyToCsv(history)
+                shareExport(context, csv, "text/csv", "scan_verlauf.csv")
+            }) {
+                Text("Export CSV")
+            }
+            Button(onClick = {
+                val json = Gson().toJson(history)
+                shareExport(context, json, "application/json", "scan_verlauf.json")
+            }) {
+                Text("Export JSON")
+            }
+            Button(onClick = {
+                showClearAllDialog = true
+            }) {
+                Text("Löschen")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (history.isEmpty()) {
+            Text(
+                text = "Noch kein Verlauf vorhanden.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(bottom = 12.dp)
+            ) {
+                items(history, key = { it.timestamp }) { entry ->
+                    DismissibleHistoryEntry(
+                        entry = entry,
+                        onOpen = {
+                            val codesJson = URLEncoder.encode(
+                                Gson().toJson(entry.codes),
+                                StandardCharsets.UTF_8.toString()
+                            )
+                            navController.navigate("result/$codesJson/true")
+                        },
+                        onDelete = {
+                            history = removeHistoryEntry(context, entry)
+                            Toast.makeText(context, "Eintrag geloescht", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DismissibleHistoryEntry(
+    entry: ScanHistoryEntry,
+    onOpen: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value != SwipeToDismissBoxValue.Settled) {
+                onDelete()
+                true
+            } else {
+                false
+            }
+        },
+        positionalThreshold = { totalDistance -> totalDistance * 0.6f }
+    )
+
+    val timeText = SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale.getDefault())
+        .format(Date(entry.timestamp))
+
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = true,
+        enableDismissFromEndToStart = false,
+        backgroundContent = {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(MaterialTheme.shapes.medium)
+                    .background(Color(0xFFE38396))
+                    .padding(horizontal = 16.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Delete,
+                    contentDescription = "Eintrag löschen",
+                    tint = Color.White
+                )
+            }
+        },
+        content = {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onOpen
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "$timeText - ${entry.codes.size} Codes",
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    entry.codes.forEach { code ->
+                        Text(
+                            text = "${code.type}: ${code.rawValue}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+        }
+    )
+}
+private const val HISTORY_PREFS_NAME = "scan_history_prefs"
+private const val HISTORY_KEY = "scan_history_entries"
+private const val HISTORY_MAX_ENTRIES = 200
+
+private fun loadHistory(context: android.content.Context): List<ScanHistoryEntry> {
+    val prefs = context.getSharedPreferences(HISTORY_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val json = prefs.getString(HISTORY_KEY, null) ?: return emptyList()
+    return try {
+        val type = object : TypeToken<List<ScanHistoryEntry>>() {}.type
+        Gson().fromJson<List<ScanHistoryEntry>>(json, type) ?: emptyList()
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
+private fun saveHistory(context: android.content.Context, entries: List<ScanHistoryEntry>) {
+    val prefs = context.getSharedPreferences(HISTORY_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    prefs.edit().putString(HISTORY_KEY, Gson().toJson(entries)).apply()
+}
+
+private fun appendHistoryEntry(context: android.content.Context, codes: List<ScannedCode>) {
+    if (codes.isEmpty()) return
+    val existing = loadHistory(context).toMutableList()
+    existing.add(0, ScanHistoryEntry(timestamp = System.currentTimeMillis(), codes = codes))
+    if (existing.size > HISTORY_MAX_ENTRIES) {
+        existing.subList(HISTORY_MAX_ENTRIES, existing.size).clear()
+    }
+    saveHistory(context, existing)
+}
+
+private fun clearHistory(context: android.content.Context) {
+    saveHistory(context, emptyList())
+}
+
+private fun removeHistoryEntry(
+    context: android.content.Context,
+    entry: ScanHistoryEntry
+): List<ScanHistoryEntry> {
+    val existing = loadHistory(context).toMutableList()
+    val index = existing.indexOfFirst {
+        it.timestamp == entry.timestamp && it.codes == entry.codes
+    }
+    if (index >= 0) {
+        existing.removeAt(index)
+        saveHistory(context, existing)
+    }
+    return existing
+}
+
+private fun historyToCsv(history: List<ScanHistoryEntry>): String {
+    val header = "timestamp_iso,type,is_gs1,raw_value"
+    val rows = history.flatMap { entry ->
+        val timestampIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
+            .format(Date(entry.timestamp))
+        entry.codes.map { code ->
+            val escapedRaw = code.rawValue.replace("\"", "\"\"")
+            "$timestampIso,${code.type},${code.isGs1},\"$escapedRaw\""
+        }
+    }
+    return (listOf(header) + rows).joinToString("\n")
+}
+
+private fun shareExport(
+    context: android.content.Context,
+    content: String,
+    mimeType: String,
+    fileName: String
+) {
+    if (content.isBlank()) {
+        Toast.makeText(context, "Nichts zu exportieren", Toast.LENGTH_SHORT).show()
+        return
+    }
+
+    val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+    val outFile = File(exportDir, fileName)
+    outFile.writeText(content)
+
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", outFile)
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = mimeType
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, "Export teilen"))
+}
 fun getCodeString(rawBytes: ByteArray, barcode: Barcode): String {
     val rawString = String(rawBytes, StandardCharsets.UTF_8)
     
