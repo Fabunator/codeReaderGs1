@@ -1,6 +1,7 @@
 package com.example.codescannergs1
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color as AndroidColor
 import android.net.Uri
@@ -25,6 +26,7 @@ import androidx.camera.core.FocusMeteringAction
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,14 +45,19 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -64,6 +71,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -95,6 +103,7 @@ import java.io.IOException
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.Locale
 import java.util.concurrent.Executors
 
 data class ScannedCode(
@@ -102,6 +111,8 @@ data class ScannedCode(
     val type: String,
     val isGs1: Boolean
 )
+
+enum class ResultFilter { ALL, GS1_ONLY, NON_GS1 }
 
 @ExperimentalGetImage
 class MainActivity : ComponentActivity() {
@@ -439,6 +450,24 @@ fun BarcodeResultScreen(
     isDarkThemeEnabled: Boolean,
     onDarkThemeToggle: (Boolean) -> Unit
 ) {
+    var searchQuery by remember { mutableStateOf("") }
+    var filter by remember { mutableStateOf(ResultFilter.ALL) }
+
+    val filteredCodes = remember(scannedCodes, searchQuery, filter) {
+        val normalizedQuery = searchQuery.trim().lowercase(Locale.getDefault())
+        scannedCodes.filter { code ->
+            val matchesFilter = when (filter) {
+                ResultFilter.ALL -> true
+                ResultFilter.GS1_ONLY -> code.isGs1
+                ResultFilter.NON_GS1 -> !code.isGs1
+            }
+            val matchesQuery = normalizedQuery.isEmpty() ||
+                code.type.lowercase(Locale.getDefault()).contains(normalizedQuery) ||
+                code.rawValue.lowercase(Locale.getDefault()).contains(normalizedQuery)
+            matchesFilter && matchesQuery
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -459,7 +488,7 @@ fun BarcodeResultScreen(
             }
 
             Text(
-                text = "Scan Ergebnisse (${scannedCodes.size})",
+                text = "Scan Ergebnisse (${filteredCodes.size}/${scannedCodes.size})",
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
@@ -471,19 +500,61 @@ fun BarcodeResultScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            label = { Text("Suchen (Typ oder Inhalt)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(scannedCodes) { code ->
-                CodeResultItem(code)
+            FilterChip(
+                selected = filter == ResultFilter.ALL,
+                onClick = { filter = ResultFilter.ALL },
+                label = { Text("Alle") }
+            )
+            FilterChip(
+                selected = filter == ResultFilter.GS1_ONLY,
+                onClick = { filter = ResultFilter.GS1_ONLY },
+                label = { Text("Nur GS1") }
+            )
+            FilterChip(
+                selected = filter == ResultFilter.NON_GS1,
+                onClick = { filter = ResultFilter.NON_GS1 },
+                label = { Text("Ohne GS1") }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (filteredCodes.isEmpty()) {
+            Text(
+                text = "Keine Ergebnisse fuer die aktuelle Suche/Filter.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(filteredCodes) { code ->
+                    CodeResultItem(code)
+                }
             }
         }
     }
 }
+
 fun buildHighlightedGS1String(value: String, parsedData: Map<String, String>): AnnotatedString {
     return buildAnnotatedString {
 
@@ -504,10 +575,10 @@ fun buildHighlightedGS1String(value: String, parsedData: Map<String, String>): A
                 i += 4
                 continue
             }
-            // AI erkennen (2–3 Ziffern am Anfang eines Segments)
+            // AI erkennen (2-3 Ziffern am Anfang eines Segments)
             parsedData.forEach { (ai, aiValue) ->
                 if (value[i].isDigit()) {
-                    if (value.startsWith(ai, i) &&value.startsWith(aiValue, i+ai.length)) {
+                    if (value.startsWith(ai, i) && value.startsWith(aiValue, i + ai.length)) {
                         withStyle(
                             SpanStyle(
                                 color = Color(0xFF4CAF50),
@@ -527,14 +598,66 @@ fun buildHighlightedGS1String(value: String, parsedData: Map<String, String>): A
     }
 }
 
+private fun buildPlausibilityHint(ai: String, value: String, parserMessage: String): String {
+    val definition = GS1Parser.aiDefinitions[ai]
+    return when {
+        parserMessage.contains("falsche") && parserMessage.contains("L") -> {
+            if (definition == null) {
+                "Laenge unplausibel: erkannt ${value.length} Zeichen."
+            } else if (definition.minLength == definition.maxLength) {
+                "Laenge unplausibel: erwartet ${definition.minLength}, erkannt ${value.length}."
+            } else {
+                "Laenge unplausibel: erwartet ${definition.minLength}-${definition.maxLength}, erkannt ${value.length}."
+            }
+        }
+        parserMessage.contains("Nur Zahlen") -> "Nur Ziffern erlaubt. Bitte auf Sonderzeichen achten."
+        parserMessage.contains("Datum muss") -> "Datumsformat ungueltig. Erwartet JJMMTT (z.B. 260822)."
+        parserMessage.contains("Ung") && parserMessage.contains("Datum") -> "Datum ist kalendarisch ungueltig (JJMMTT)."
+        parserMessage.contains("Pr") && parserMessage.contains("ziffer") -> "Pruefziffer ungueltig. Code ist evtl. unvollstaendig oder falsch gescannt."
+        else -> parserMessage
+    }
+}
+
 @Composable
 fun CodeResultItem(code: ScannedCode) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            Text(text = "Typ: ${code.type}", fontWeight = FontWeight.Bold, color = if (code.isGs1) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Typ: ${code.type}",
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.Bold,
+                    color = if (code.isGs1) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary
+                )
+                IconButton(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(code.rawValue))
+                        Toast.makeText(context, "Code kopiert", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Icon(imageVector = Icons.Filled.ContentCopy, contentDescription = "Code kopieren")
+                }
+                IconButton(
+                    onClick = {
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, "${code.type}: ${code.rawValue}")
+                        }
+                        context.startActivity(Intent.createChooser(shareIntent, "Code teilen"))
+                    }
+                ) {
+                    Icon(imageVector = Icons.Filled.Share, contentDescription = "Code teilen")
+                }
+            }
 
             if (code.isGs1) {
                 val parserInput = code.rawValue.replace("<GS>", "\u001d")
@@ -549,18 +672,44 @@ fun CodeResultItem(code: ScannedCode) {
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
-                parsedData.forEach { (ai, value) ->
-                    val rawValue = parsedDataRaw[ai] ?: value
+                parsedData.forEach { (ai, displayValue) ->
+                    val rawValue = parsedDataRaw[ai] ?: displayValue
                     val (plausibility, message) = GS1Parser.checkPlausibility(ai, rawValue)
+                    val warningHint = buildPlausibilityHint(ai, rawValue, message)
+
                     Column(modifier = Modifier.padding(vertical = 2.dp)) {
-                        Text(text = "($ai) ${GS1Parser.aiDefinitions[ai]?.name ?: "Unbekannt"}: \n$value", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Text(
+                                text = "($ai) ${GS1Parser.aiDefinitions[ai]?.name ?: "Unbekannt"}:\n$displayValue",
+                                modifier = Modifier.weight(1f),
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            IconButton(
+                                onClick = {
+                                    clipboardManager.setText(AnnotatedString(displayValue))
+                                    Toast.makeText(context, "AI-Wert kopiert", Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.ContentCopy,
+                                    contentDescription = "AI-Wert kopieren"
+                                )
+                            }
+                        }
                         if (!plausibility) {
-                            Text(text = "⚠ $message", color = Color.Red, style = MaterialTheme.typography.labelSmall)
+                            Text(
+                                text = "Warnung: $warningHint",
+                                color = Color.Red,
+                                style = MaterialTheme.typography.labelSmall
+                            )
                         }
                     }
                 }
-            }
-            else {
+            } else {
                 Text(text = "Roh-Daten: \n ${code.rawValue}", style = MaterialTheme.typography.bodySmall)
             }
         }
@@ -609,6 +758,11 @@ fun getBarcodeType(format: Int, value: String): String {
         else -> "Format: $format"
     }
 }
+
+
+
+
+
 
 
 
