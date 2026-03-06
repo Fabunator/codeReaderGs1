@@ -2,6 +2,7 @@ package com.example.codescannergs1
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -40,6 +41,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -50,8 +52,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -71,11 +75,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.example.codescannergs1.ui.theme.CodeScannerGS1Theme
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
@@ -102,9 +109,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        val preferences = getSharedPreferences("ui_prefs", MODE_PRIVATE)
+        val darkModeKey = "dark_mode_enabled"
 
         setContent {
             val navController = rememberNavController()
+            var isDarkThemeEnabled by remember {
+                mutableStateOf(preferences.getBoolean(darkModeKey, false))
+            }
             var hasCameraPermission by remember {
                 mutableStateOf(
                     ContextCompat.checkSelfPermission(
@@ -126,7 +138,23 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            NavHost(navController = navController, startDestination = "camera") {
+            DisposableEffect(isDarkThemeEnabled) {
+                window.decorView.setBackgroundColor(
+                    if (isDarkThemeEnabled) AndroidColor.BLACK else AndroidColor.WHITE
+                )
+                window.statusBarColor = AndroidColor.TRANSPARENT
+                window.navigationBarColor = AndroidColor.TRANSPARENT
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = !isDarkThemeEnabled
+                    isAppearanceLightNavigationBars = !isDarkThemeEnabled
+                    systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    hide(WindowInsetsCompat.Type.systemBars())
+                }
+                onDispose { }
+            }
+
+            CodeScannerGS1Theme(darkTheme = isDarkThemeEnabled) {
+                NavHost(navController = navController, startDestination = "camera") {
                 composable("camera") {
                     if (hasCameraPermission) {
                         CameraScreen(navController = navController)
@@ -151,17 +179,25 @@ class MainActivity : ComponentActivity() {
                     
                     BarcodeResultScreen(
                         navController = navController,
-                        scannedCodes = scannedCodes
+                        scannedCodes = scannedCodes,
+                        isDarkThemeEnabled = isDarkThemeEnabled,
+                        onDarkThemeToggle = { isEnabled ->
+                            isDarkThemeEnabled = isEnabled
+                            preferences.edit().putBoolean(darkModeKey, isEnabled).apply()
+                        }
                     )
                 }
             }
+        }
         }
     }
 }
 
 @Composable
 @ExperimentalGetImage
-fun CameraScreen(navController: NavController) {
+fun CameraScreen(
+    navController: NavController
+) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -226,6 +262,7 @@ fun CameraScreen(navController: NavController) {
             factory = { ctx ->
                 val previewView = PreviewView(ctx).apply {
                     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                    setBackgroundColor(AndroidColor.BLACK)
                 }
 
                 val resolutionSelector = ResolutionSelector.Builder()
@@ -337,31 +374,32 @@ fun CameraScreen(navController: NavController) {
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.6f))
+                .background(Color.Transparent)
                 .safeDrawingPadding()
-                .padding(24.dp),
+                .padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 45.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Kamera-Steuerungen
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 IconButton(
                     onClick = {
-                        isFlashOn = !isFlashOn
-                        camera?.cameraControl?.enableTorch(isFlashOn)
+                        imagePickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
                     },
-                    modifier = Modifier.size(48.dp)
+                    modifier = Modifier.size(40.dp)
                 ) {
                     Icon(
-                        imageVector = if (isFlashOn) Icons.Default.FlashOn else Icons.Filled.FlashOff,
-                        contentDescription = "Flash Toggle",
-                        tint = if (isFlashOn) Color.Yellow else Color.White
+                        imageVector = Icons.Filled.PhotoLibrary,
+                        contentDescription = "Galerie öffnen",
+                        tint = Color.White
                     )
                 }
-                
+
                 Row(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically
@@ -377,25 +415,20 @@ fun CameraScreen(navController: NavController) {
                         modifier = Modifier.weight(1f)
                     )
                 }
-            }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text(
-                text = "Barcode scannen oder Bild wählen",
-                color = Color.White,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(
-                onClick = {
-                    imagePickerLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                IconButton(
+                    onClick = {
+                        isFlashOn = !isFlashOn
+                        camera?.cameraControl?.enableTorch(isFlashOn)
+                    },
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isFlashOn) Icons.Default.FlashOn else Icons.Filled.FlashOff,
+                        contentDescription = "Flash Toggle",
+                        tint = if (isFlashOn) Color.Yellow else Color.White
                     )
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Galerie öffnen")
+                }
             }
         }
     }
@@ -404,26 +437,39 @@ fun CameraScreen(navController: NavController) {
 @Composable
 fun BarcodeResultScreen(
     navController: NavController,
-    scannedCodes: List<ScannedCode>
+    scannedCodes: List<ScannedCode>,
+    isDarkThemeEnabled: Boolean,
+    onDarkThemeToggle: (Boolean) -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .safeDrawingPadding()
             .background(MaterialTheme.colorScheme.background)
-            .padding(16.dp)
+            .padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 45.dp),
     ) {
-        Text(
-            text = "Scan Ergebnisse (${scannedCodes.size})",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
-        )
-        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Scan Ergebnisse (${scannedCodes.size})",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Switch(
+                checked = isDarkThemeEnabled,
+                onCheckedChange = onDarkThemeToggle
+            )
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
         
         LazyColumn(
             modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(bottom = 16.dp),
+            contentPadding = PaddingValues(bottom = 45.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(scannedCodes) { code ->
@@ -563,3 +609,4 @@ fun getBarcodeType(format: Int, value: String): String {
         else -> "Format: $format"
     }
 }
+
