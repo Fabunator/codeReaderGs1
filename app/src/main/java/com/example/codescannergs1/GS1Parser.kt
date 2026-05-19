@@ -47,6 +47,7 @@ object GS1Parser {
         "254" to AI(-1, 1, 20, AIType.ALPHANUMERIC, "GLN EXTENSION COMPONENT"),
         "255" to AI(-1, 13, 25, AIType.ALPHANUMERIC, "GCN"),
         "30" to AI(-1, 1, 8, AIType.ALPHANUMERIC, "VAR. COUNT"),
+        "37" to AI(-1, 1, 8, AIType.NUMERIC, "COUNT"),
         "400" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "ORDER NUMBER"),
         "401" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "GINC"),
         "403" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "ROUTE"),
