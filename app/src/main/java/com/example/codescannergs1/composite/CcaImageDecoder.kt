@@ -2,7 +2,6 @@ package com.example.codescannergs1.composite
 
 import kotlin.math.abs
 import kotlin.math.hypot
-import kotlin.math.roundToInt
 
 /** Graustufenbild als schmale Schnittstelle, damit die Suche ohne Android testbar bleibt. */
 interface GrayImage {
@@ -24,189 +23,83 @@ data class Quad(val topLeft: Pt, val topRight: Pt, val bottomRight: Pt, val bott
 /**
  * Findet und decodiert den CC-A-Anteil oberhalb eines erkannten GS1 DataBar Limited.
  *
- * Das lineare Symbol liefert nur Lage und Leserichtung. Maßstab und linke Kante des
- * CC-A werden aus dem Symbol selbst bestimmt: eine CC-A-Zeile ist genau
- * [CcaDecoder.ROW_MODULES] = 72 Module breit, beginnt mit einem Balken (erstes Modul
- * des ersten Codeworts) und endet mit dem Stop-Balken. Der Abstand vom linken Rand
- * des ersten dunklen Laufs bis zum rechten Rand des letzten dunklen Laufs einer
- * Zeile ist damit exakt 72 X.
+ * Das Raster wird aus dem Linearsymbol abgeleitet: der CC-A steht bündig über dessen
+ * linker Kante und ist genau [CcaDecoder.ROW_MODULES] = 72 Module breit, während der
+ * DataBar Limited 73 Module Tinte breit ist. Aus der von zxing-cpp gemeldeten Lage
+ * ergeben sich damit Modulbreite und linke Kante direkt.
  *
- * Ablauf:
- *  1. Abtastlinien senkrecht zur Leserichtung oberhalb des Linearsymbols legen
- *  2. je Linie linke/rechte dunkle Kante und damit Breite und X bestimmen
- *  3. zusammenhängende Linienbänder mit konsistenter Breite/Kante als Kandidaten nehmen
- *  4. je Kandidat Zeilenzahl 4..8 durchprobieren, Raster abtasten und decodieren;
- *     RAP-, Cluster- und Reed-Solomon-Prüfung verwerfen falsche Kandidaten
+ * Bewusst *nicht* über die dunklen Ränder des CC-A selbst: auf Negativ-Etiketten
+ * (helles Symbol auf dunklem Grund) liegt das erste Modul einer Zeile – ein Balken –
+ * farblich auf dem Hintergrund, seine Kante ist dort nicht messbar.
+ *
+ * Kandidaten werden über die Row Address Patterns geprüft. Das ist sehr trennscharf:
+ *  - der Right-RAP muss in der Tabelle stehen, ebenso der Centre-RAP,
+ *  - für jede gültige CC-A-Variante gilt centreIndex - rightIndex = 20 (mod 52),
+ *  - das letzte Modul der Zeile ist der Stop-Balken,
+ *  - alle drei Codewörter einer Zeile müssen aus demselben Cluster stammen.
+ * Der Right-RAP-Index nummeriert zugleich die Zeile, daher ergeben sich Zeilenzahl
+ * und Zeilenhöhe direkt aus den Fundstellen.
  */
 object CcaImageDecoder {
 
-    /** Wie weit oberhalb des Linearsymbols gesucht wird, in geschätzten Modulbreiten. */
+    /** Modulbreite des DataBar Limited (Tintenbereich), Bezug für das Raster. */
+    private const val LINEAR_MODULES = 73f
+
+    /** Wie weit jenseits des Linearsymbols gesucht wird, in Modulbreiten. */
     private const val SEARCH_DEPTH_MODULES = 46f
 
-    /** Abtastschritt senkrecht zur Leserichtung, in geschätzten Modulbreiten. */
-    private const val SCAN_STEP_MODULES = 0.25f
+    /** Abtastschritt senkrecht zur Leserichtung, in Modulbreiten. */
+    private const val SCAN_STEP_MODULES = 0.4f
 
-    /** Modulbreite des DataBar Limited inkl. Guard-Mustern – nur zur Startschätzung. */
-    private const val LINEAR_MODULES_ESTIMATE = 73f
+    /** Right-RAP-Startwert je Zeilenzahl 4..8 (ISO/IEC 24723 Tabellen 10/11). */
+    private val RIGHT_RAP_START = intArrayOf(23, 13, 17, 27, 33)
 
-    private val ZERO = floatArrayOf(0f)
+    /** Maßstabskorrekturen, falls die gemeldete Lage leicht zu eng oder zu weit ist. */
+    private val SCALES = floatArrayOf(1.00f, 0.98f, 1.02f)
 
-    /** Übliche Zeilenhöhen eines CC-A in Modulbreiten (ISO/IEC 24723: mindestens 2X). */
-    private val ROW_HEIGHTS_MODULES = floatArrayOf(2f, 3f, 4f, 2.5f, 5f)
+    /** Verschiebungen der linken Kante in Modulbreiten. */
+    private val LEFT_OFFSETS = floatArrayOf(0f, -0.25f, 0.25f, -0.5f, 0.5f, -1f, 1f)
 
-    private val TOP_SHIFTS = floatArrayOf(0f, -0.5f, 0.5f, -1f, 1f)
-    private val HEIGHT_SHIFTS = floatArrayOf(0f, -1f, 1f, -2f, 2f)
+    /** Erste Spalte des Vortests: ab hier liegen Right-RAP und Stop-Modul. */
+    private const val PRETEST_FROM = 44
+
+    private const val CENTRE_MINUS_RIGHT = 20
 
     data class Match(
         val result: CcaDecoder.Result,
         /** Modulbreite in Pixeln. */
         val moduleSize: Float,
-        val rowHeightModules: Float
+        val rowHeightModules: Float,
+        /** true, wenn die Balken heller als der Hintergrund sind (Negativdruck). */
+        val inverted: Boolean
     )
 
     fun decode(image: GrayImage, linear: Quad): Match? {
         val leftMid = mid(linear.topLeft, linear.bottomLeft)
         val rightMid = mid(linear.topRight, linear.bottomRight)
-        val lineLen = dist(leftMid, rightMid)
-        if (lineLen < 40f) return null
+        val lineLength = dist(leftMid, rightMid)
+        if (lineLength < 40f) return null
 
-        val ux = (rightMid.x - leftMid.x) / lineLen
-        val uy = (rightMid.y - leftMid.y) / lineLen
-        val moduleEstimate = lineLen / LINEAR_MODULES_ESTIMATE
-
-        // halbe Höhe des gemeldeten Bereichs – Startpunkt jenseits des Linearsymbols
+        val ux = (rightMid.x - leftMid.x) / lineLength
+        val uy = (rightMid.y - leftMid.y) / lineLength
+        val moduleSize0 = lineLength / LINEAR_MODULES
+        // halbe Höhe des gemeldeten Bereichs: Startpunkt jenseits des Linearsymbols
         val halfHeight = dist(linear.topLeft, leftMid)
 
-        for (sign in intArrayOf(-1, 1)) {
-            val nx = -uy * sign
-            val ny = ux * sign
-            val match = searchSide(
-                image, leftMid, rightMid, ux, uy, nx, ny,
-                moduleEstimate, halfHeight
-            )
-            if (match != null) return match
-        }
-        return null
-    }
+        val ctx = Context(image, leftMid, ux, uy, moduleSize0, halfHeight)
 
-    private class ScanLine(
-        val offset: Float,
-        val left: Float,
-        val width: Float
-    )
-
-    private fun searchSide(
-        image: GrayImage,
-        leftMid: Pt,
-        rightMid: Pt,
-        ux: Float,
-        uy: Float,
-        nx: Float,
-        ny: Float,
-        moduleEstimate: Float,
-        halfHeight: Float
-    ): Match? {
-        val lineLen = dist(leftMid, rightMid)
-        // Abtastbereich entlang der Leserichtung etwas über das Linearsymbol hinaus
-        val fromS = -3f * moduleEstimate
-        val toS = lineLen + 3f * moduleEstimate
-        val samples = ((toS - fromS) / (moduleEstimate * 0.25f)).toInt().coerceIn(64, 4096)
-
-        val step = moduleEstimate * SCAN_STEP_MODULES
-        val start = halfHeight + moduleEstimate * 0.5f
-        val end = halfHeight + moduleEstimate * SEARCH_DEPTH_MODULES
-
-        val lines = ArrayList<ScanLine>()
-        var t = start
-        while (t <= end) {
-            val line = measureLine(image, leftMid, ux, uy, nx, ny, t, fromS, toS, samples)
-            lines.add(line ?: ScanLine(t, Float.NaN, Float.NaN))
-            t += step
-        }
-
-        // zusammenhängende Bänder mit konsistenter Breite und linker Kante sammeln
-        val bands = ArrayList<Band>()
-        var i = 0
-        while (i < lines.size) {
-            if (lines[i].width.isNaN()) { i++; continue }
-            var j = i + 1
-            while (j < lines.size && !lines[j].width.isNaN() &&
-                abs(lines[j].width - lines[i].width) < 0.08f * lines[i].width &&
-                abs(lines[j].left - lines[i].left) < 1.5f * (lines[i].width / CcaDecoder.ROW_MODULES)
-            ) j++
-
-            val band = lines.subList(i, j)
-            if (band.size >= 8) {
-                bands.add(
-                    Band(
-                        left = median(band.map { it.left }),
-                        moduleSize = median(band.map { it.width }) / CcaDecoder.ROW_MODULES,
-                        top = band.first().offset,
-                        bottom = band.last().offset + step
-                    )
-                )
-            }
-            i = if (j > i + 1) j else i + 1
-        }
-
-        // Drei Durchgänge, vom Wahrscheinlichsten zum Aufwendigsten – jeweils über
-        // alle Bänder, damit der Normalfall im ersten Durchgang erledigt ist:
-        //  0: Zeilenhöhe = Bandhöhe / Zeilenzahl, ohne Korrektur
-        //  1: dasselbe mit kleinen Verschiebungen der Bandgrenzen
-        //     (bei unscharfen Kanten liegt das gemessene Band leicht daneben)
-        //  2: feste Zeilenhöhen 2X/3X/4X, verankert am nahen und am fernen Bandrand –
-        //     greift, wenn das Band mehr als den CC-A umfasst, etwa wenn Trennmuster
-        //     und Linearsymbol mit hineinlaufen
-        for (pass in 0..2) {
-            for (band in bands) {
-                val match = tryBand(image, leftMid, ux, uy, nx, ny, band, step, pass)
-                if (match != null) return match
-            }
-        }
-        return null
-    }
-
-    private class Band(
-        val left: Float,
-        val moduleSize: Float,
-        val top: Float,
-        val bottom: Float
-    ) {
-        val height: Float get() = bottom - top
-    }
-
-    private fun tryBand(
-        image: GrayImage,
-        origin: Pt,
-        ux: Float, uy: Float,
-        nx: Float, ny: Float,
-        band: Band,
-        step: Float,
-        pass: Int
-    ): Match? {
-        val topShifts = if (pass == 0) ZERO else TOP_SHIFTS
-        for (rows in 4..8) {
-            val heights = if (pass == 2) {
-                ROW_HEIGHTS_MODULES.map { it * band.moduleSize }
-            } else {
-                val shifts = if (pass == 0) ZERO else HEIGHT_SHIFTS
-                shifts.map { (band.height + it * step) / rows }
-            }
-            for (rowHeight in heights) {
-                val rowHeightModules = rowHeight / band.moduleSize
-                if (rowHeightModules < 1.4f || rowHeightModules > 5.5f) continue
-                val anchors = if (pass == 2) {
-                    floatArrayOf(band.top, band.bottom - rows * rowHeight)
-                } else {
-                    floatArrayOf(band.top)
-                }
-                for (anchor in anchors) {
-                    for (dt in topShifts) {
-                        val decoded = trySample(
-                            image, origin, ux, uy, nx, ny,
-                            band.left, band.moduleSize, anchor + dt * step, rowHeight, rows
-                        )
-                        if (decoded != null) return Match(decoded, band.moduleSize, rowHeightModules)
+        for (sign in SIGNS) {
+            ctx.nx = -uy * sign
+            ctx.ny = ux * sign
+            // Liegt auf dieser Seite überhaupt etwas? Ein leerer Ruhebereich wird so
+            // in Bruchteilen einer Millisekunde abgewiesen.
+            if (!hasStructure(ctx)) continue
+            for (inverted in BOOLEANS) {
+                ctx.inverted = inverted
+                for (scale in SCALES) {
+                    for (leftOffset in LEFT_OFFSETS) {
+                        val match = tryGrid(ctx, moduleSize0 * scale, leftOffset)
+                        if (match != null) return match
                     }
                 }
             }
@@ -214,127 +107,199 @@ object CcaImageDecoder {
         return null
     }
 
-    /** Bestimmt linke Kante und Breite der dunklen Struktur auf einer Abtastlinie. */
-    private fun measureLine(
-        image: GrayImage,
-        origin: Pt,
-        ux: Float, uy: Float,
-        nx: Float, ny: Float,
-        t: Float,
-        fromS: Float, toS: Float,
-        samples: Int
-    ): ScanLine? {
-        val values = IntArray(samples)
-        val ds = (toS - fromS) / (samples - 1)
-        var min = 255
-        var max = 0
-        for (k in 0 until samples) {
-            val s = fromS + k * ds
-            val x = origin.x + ux * s + nx * t
-            val y = origin.y + uy * s + ny * t
-            val v = sample(image, x, y)
-            values[k] = v
+    private val SIGNS = intArrayOf(-1, 1)
+    private val BOOLEANS = booleanArrayOf(false, true)
+
+    private class Context(
+        val image: GrayImage,
+        val origin: Pt,
+        val ux: Float,
+        val uy: Float,
+        val moduleSize0: Float,
+        val halfHeight: Float
+    ) {
+        var nx = 0f
+        var ny = 0f
+        var inverted = false
+        val luma = FloatArray(CcaDecoder.ROW_MODULES)
+        val bits = BooleanArray(CcaDecoder.ROW_MODULES)
+    }
+
+    private fun tryGrid(ctx: Context, moduleSize: Float, leftOffsetModules: Float): Match? {
+        val step = ctx.moduleSize0 * SCAN_STEP_MODULES
+        val start = ctx.halfHeight + step
+        val end = ctx.halfHeight + ctx.moduleSize0 * SEARCH_DEPTH_MODULES
+        val s0 = leftOffsetModules * moduleSize
+
+        // Zeilenkandidaten je Right-RAP-Index (erster Fund gewinnt)
+        var found = 0
+        val rowBits = arrayOfNulls<BooleanArray>(52)
+        val rowOffset = FloatArray(52)
+
+        var t = start
+        while (t <= end) {
+            if (readRow(ctx, s0, moduleSize, t)) {
+                val rightIndex = rapIndex(ctx.bits, 61, Pdf417Tables.rapSide)
+                if (rightIndex >= 0 && rowBits[rightIndex] == null) {
+                    rowBits[rightIndex] = ctx.bits.copyOf()
+                    rowOffset[rightIndex] = t
+                    found++
+                }
+            }
+            t += step
+        }
+        if (found < 4) return null
+
+        for (rows in 8 downTo 4) {
+            val first = (RIGHT_RAP_START[rows - 4] - 1 + 52) % 52
+            var complete = true
+            for (k in 0 until rows) {
+                if (rowBits[(first + k) % 52] == null) { complete = false; break }
+            }
+            if (!complete) continue
+
+            val moduleRows = ArrayList<BooleanArray>(rows)
+            for (k in 0 until rows) moduleRows.add(rowBits[(first + k) % 52]!!)
+            val result = try {
+                CcaDecoder.decodeModuleRows(moduleRows)
+            } catch (_: Exception) {
+                continue
+            }
+            val span = rowOffset[(first + rows - 1) % 52] - rowOffset[first % 52]
+            val rowHeight = if (rows > 1) abs(span) / (rows - 1) else moduleSize * 2f
+            return Match(result, moduleSize, rowHeight / moduleSize, ctx.inverted)
+        }
+        return null
+    }
+
+    /**
+     * Tastet eine Zeile ab und prüft die billigen Strukturmerkmale.
+     * Bei Erfolg stehen die 72 Module in [Context.bits].
+     */
+    private fun readRow(ctx: Context, s0: Float, moduleSize: Float, t: Float): Boolean {
+        val baseX = ctx.origin.x + ctx.nx * t
+        val baseY = ctx.origin.y + ctx.ny * t
+
+        // Vortest auf dem rechten Teil der Zeile: Stop-Modul und Right-RAP.
+        // Das verwirft die meisten Abtastlinien, bevor die ganze Zeile gelesen wird.
+        var pmin = Float.MAX_VALUE
+        var pmax = -Float.MAX_VALUE
+        for (m in PRETEST_FROM until CcaDecoder.ROW_MODULES) {
+            val s = s0 + moduleSize * (m + 0.5f)
+            val v = sample(ctx.image, baseX + ctx.ux * s, baseY + ctx.uy * s)
+            ctx.luma[m] = v
+            if (v < pmin) pmin = v
+            if (v > pmax) pmax = v
+        }
+        if (pmax - pmin < 24f) return false
+        val pthr = (pmin + pmax) * 0.5f
+        for (m in PRETEST_FROM until CcaDecoder.ROW_MODULES) {
+            ctx.bits[m] = if (ctx.inverted) ctx.luma[m] > pthr else ctx.luma[m] < pthr
+        }
+        if (!ctx.bits[71]) return false
+        if (rapIndex(ctx.bits, 61, Pdf417Tables.rapSide) < 0) return false
+
+        var min = Float.MAX_VALUE
+        var max = -Float.MAX_VALUE
+        for (m in 0 until CcaDecoder.ROW_MODULES) {
+            if (m < PRETEST_FROM) {
+                val s = s0 + moduleSize * (m + 0.5f)
+                ctx.luma[m] = sample(ctx.image, baseX + ctx.ux * s, baseY + ctx.uy * s)
+            }
+            val v = ctx.luma[m]
             if (v < min) min = v
             if (v > max) max = v
         }
-        if (max - min < 24) return null
-        val threshold = (min + max) / 2
-
-        var firstDark = -1
-        var lastDark = -1
-        for (k in 0 until samples) {
-            if (values[k] < threshold) {
-                if (firstDark < 0) firstDark = k
-                lastDark = k
-            }
+        if (max - min < 24f) return false
+        val threshold = (min + max) * 0.5f
+        for (m in 0 until CcaDecoder.ROW_MODULES) {
+            ctx.bits[m] = if (ctx.inverted) ctx.luma[m] > threshold else ctx.luma[m] < threshold
         }
-        if (firstDark < 0 || lastDark <= firstDark) return null
-        // Kanten auf halbem Weg zum jeweils benachbarten hellen Sample
-        val leftEdge = fromS + (firstDark - 0.5f) * ds
-        val rightEdge = fromS + (lastDark + 0.5f) * ds
-        val width = rightEdge - leftEdge
-        if (width < 20f) return null
-        return ScanLine(t, leftEdge, width)
+
+        if (!ctx.bits[71]) return false
+        val right = rapIndex(ctx.bits, 61, Pdf417Tables.rapSide)
+        if (right < 0) return false
+        val centre = rapIndex(ctx.bits, 17, Pdf417Tables.rapCentre)
+        if (centre < 0) return false
+        if (((centre - right) % 52 + 52) % 52 != CENTRE_MINUS_RIGHT) return false
+
+        // alle drei Codewörter müssen bekannt sein und aus demselben Cluster stammen
+        var cluster = -1
+        for (offset in intArrayOf(0, 27, 44)) {
+            val hit = Pdf417Tables.patternToCodeword[readInt(ctx.bits, offset, 17)] ?: return false
+            val c = hit shr 16
+            if (cluster < 0) cluster = c else if (cluster != c) return false
+        }
+        return true
     }
 
-    private fun trySample(
-        image: GrayImage,
-        origin: Pt,
-        ux: Float, uy: Float,
-        nx: Float, ny: Float,
-        left: Float,
-        moduleSize: Float,
-        bandTop: Float,
-        rowHeight: Float,
-        rows: Int
-    ): CcaDecoder.Result? {
-        val moduleRows = ArrayList<BooleanArray>(rows)
-        for (row in 0 until rows) {
-            val t = bandTop + rowHeight * (row + 0.5f)
-            val bits = BooleanArray(CcaDecoder.ROW_MODULES)
-            // Schwelle je Zeile aus Minimum/Maximum der Modulmittelpunkte
-            val lumas = IntArray(CcaDecoder.ROW_MODULES)
-            var min = 255
-            var max = 0
-            for (m in 0 until CcaDecoder.ROW_MODULES) {
-                val s = left + moduleSize * (m + 0.5f)
-                var acc = 0
-                var n = 0
-                // drei Abtastpunkte über die Zeilenhöhe mitteln
-                for (dy in intArrayOf(-1, 0, 1)) {
-                    val tt = t + dy * rowHeight * 0.25f
-                    val x = origin.x + ux * s + nx * tt
-                    val y = origin.y + uy * s + ny * tt
-                    acc += sample(image, x, y)
-                    n++
-                }
-                val v = acc / n
-                lumas[m] = v
+    /**
+     * Grobe Vorprüfung: hat der Bereich jenseits des Linearsymbols überhaupt
+     * genügend Kontrast und Kantenwechsel, um ein Symbol zu enthalten?
+     */
+    private fun hasStructure(ctx: Context): Boolean {
+        val m = ctx.moduleSize0
+        var structured = 0
+        var t = ctx.halfHeight + m
+        val end = ctx.halfHeight + m * SEARCH_DEPTH_MODULES
+        while (t <= end) {
+            val baseX = ctx.origin.x + ctx.nx * t
+            val baseY = ctx.origin.y + ctx.ny * t
+            var min = Float.MAX_VALUE
+            var max = -Float.MAX_VALUE
+            for (k in 0 until CcaDecoder.ROW_MODULES) {
+                val s = m * (k + 0.5f)
+                val v = sample(ctx.image, baseX + ctx.ux * s, baseY + ctx.uy * s)
+                ctx.luma[k] = v
                 if (v < min) min = v
                 if (v > max) max = v
             }
-            if (max - min < 24) return null
-            val threshold = (min + max) / 2
-            for (m in 0 until CcaDecoder.ROW_MODULES) bits[m] = lumas[m] < threshold
-            moduleRows.add(bits)
+            if (max - min >= 24f) {
+                val thr = (min + max) * 0.5f
+                var changes = 0
+                var prev = ctx.luma[0] < thr
+                for (k in 1 until CcaDecoder.ROW_MODULES) {
+                    val cur = ctx.luma[k] < thr
+                    if (cur != prev) changes++
+                    prev = cur
+                }
+                // eine CC-A-Zeile hat 36 Wechsel; grobzügige Untergrenze
+                if (changes >= 18) structured++
+                if (structured >= 3) return true
+            }
+            t += m * 2f
         }
-
-        // Zeilenreihenfolge: der CC-A steht über dem Linearsymbol, die Suche läuft
-        // vom Linearsymbol nach außen – also von der letzten zur ersten Codewortzeile.
-        val reversed = moduleRows.reversed()
-        return tryDecode(reversed) ?: tryDecode(moduleRows)
+        return false
     }
 
-    private fun tryDecode(rows: List<BooleanArray>): CcaDecoder.Result? =
-        try {
-            CcaDecoder.decodeModuleRows(rows)
-        } catch (_: Exception) {
-            null
-        }
+    private fun rapIndex(bits: BooleanArray, offset: Int, table: IntArray): Int {
+        val v = readInt(bits, offset, 10)
+        for (i in table.indices) if (table[i] == v) return i
+        return -1
+    }
+
+    private fun readInt(bits: BooleanArray, offset: Int, length: Int): Int {
+        var v = 0
+        for (i in 0 until length) v = (v shl 1) or if (bits[offset + i]) 1 else 0
+        return v
+    }
 
     /** Bilineare Abtastung. */
-    private fun sample(image: GrayImage, x: Float, y: Float): Int {
-        if (x < 0f || y < 0f || x > image.width - 1f || y > image.height - 1f) return 255
+    private fun sample(image: GrayImage, x: Float, y: Float): Float {
+        if (x < 0f || y < 0f || x > image.width - 2f || y > image.height - 2f) return 255f
         val x0 = x.toInt()
         val y0 = y.toInt()
-        val x1 = (x0 + 1).coerceAtMost(image.width - 1)
-        val y1 = (y0 + 1).coerceAtMost(image.height - 1)
         val fx = x - x0
         val fy = y - y0
         val a = image.luma(x0, y0)
-        val b = image.luma(x1, y0)
-        val c = image.luma(x0, y1)
-        val d = image.luma(x1, y1)
+        val b = image.luma(x0 + 1, y0)
+        val c = image.luma(x0, y0 + 1)
+        val d = image.luma(x0 + 1, y0 + 1)
         val top = a + (b - a) * fx
         val bottom = c + (d - c) * fx
-        return (top + (bottom - top) * fy).roundToInt().coerceIn(0, 255)
+        return top + (bottom - top) * fy
     }
 
     private fun mid(a: Pt, b: Pt) = Pt((a.x + b.x) / 2f, (a.y + b.y) / 2f)
     private fun dist(a: Pt, b: Pt) = hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble()).toFloat()
-
-    private fun median(values: List<Float>): Float {
-        val sorted = values.sorted()
-        return sorted[sorted.size / 2]
-    }
 }

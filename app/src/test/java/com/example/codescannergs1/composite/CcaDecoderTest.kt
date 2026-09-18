@@ -186,4 +186,73 @@ class CcaDecoderTest {
         val r = render(linearOnly, 5)
         assertEquals(null, CcaImageDecoder.decode(r.image, r.quad))
     }
+
+    // ------------------------------------------------------------------
+    // Echte Fotos aus testdata/databar-limited-cca
+    // ------------------------------------------------------------------
+
+    private class BufferedGray(private val img: java.awt.image.BufferedImage) : GrayImage {
+        override val width get() = img.width
+        override val height get() = img.height
+        private val gray = IntArray(img.width * img.height).also { out ->
+            val px = img.getRGB(0, 0, img.width, img.height, null, 0, img.width)
+            for (i in px.indices) {
+                val p = px[i]
+                out[i] = (((p shr 16 and 0xFF) * 77 + (p shr 8 and 0xFF) * 150 + (p and 0xFF) * 29) shr 8)
+            }
+        }
+        override fun luma(x: Int, y: Int) = gray[y * img.width + x]
+    }
+
+    /**
+     * Sucht die Aufnahme ausgehend vom Arbeitsverzeichnis nach oben. Gradle fuehrt
+     * Unit-Tests im Modulverzeichnis aus, die Bilder liegen im Projektstamm.
+     */
+    private fun photo(name: String): java.io.File? {
+        var dir: java.io.File? = java.io.File("").absoluteFile
+        repeat(5) {
+            val candidate = java.io.File(dir, "testdata/databar-limited-cca/$name")
+            if (candidate.isFile) return candidate
+            dir = dir?.parentFile
+        }
+        return null
+    }
+
+    /**
+     * Regressionstest auf echten Aufnahmen. Die Lage des Linearsymbols ist fest
+     * hinterlegt (in der App liefert sie zxing-cpp), damit der Test ohne die
+     * native Bibliothek laeuft.
+     *
+     * Das zweite Foto ist ein Negativdruck: helles Symbol auf dunkelblauem Grund.
+     * Dort laesst sich die linke Kante des CC-A nicht aus dem Bild messen, das
+     * Raster muss aus dem Linearsymbol abgeleitet werden.
+     */
+    @Test
+    fun decodesRealPhotographs() {
+        val cases = listOf(
+            Triple(
+                "MVIMG_20260918_133242.jpg",
+                Quad(Pt(663f, 2159f), Pt(1566f, 2159f), Pt(1566f, 2200f), Pt(663f, 2200f)),
+                "171212121032344234"
+            ),
+            Triple(
+                "MVIMG_20260918_133430.jpg",
+                Quad(Pt(879f, 1984f), Pt(1413f, 1984f), Pt(1414f, 2049f), Pt(879f, 2049f)),
+                "1725082210ABCDEF"
+            )
+        )
+        var checked = 0
+        for ((name, quad, expected) in cases) {
+            val file = photo(name) ?: continue
+            val image = BufferedGray(javax.imageio.ImageIO.read(file))
+            val match = CcaImageDecoder.decode(image, quad)
+                ?: throw AssertionError("$name: CC-A nicht gefunden")
+            assertEquals(name, expected, match.result.elementString)
+            assertEquals(name, 4, match.result.rows)
+            checked++
+        }
+        // Fehlen die Aufnahmen (etwa in einem schlanken Checkout), laeuft der Test
+        // ohne Pruefung durch, statt aus dem falschen Grund rot zu werden.
+        if (checked == 0) println("Hinweis: testdata/databar-limited-cca nicht gefunden, Fototest uebersprungen")
+    }
 }
