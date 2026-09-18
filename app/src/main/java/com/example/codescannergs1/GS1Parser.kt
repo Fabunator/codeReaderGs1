@@ -82,14 +82,15 @@ object GS1Parser {
     fun parse(data: String, formatDatesForDisplay: Boolean = true): Map<String, String> {
         val parsedData = mutableMapOf<String, String>()
         
-        // Entferne AIM Identifier (z.B. ]d2, ]C1) oder führendes FNC1
-        var remainingData = when {
-            data.startsWith("]") && data.length >= 3 -> data.substring(3)
-            data.startsWith(FNC1) -> data.substring(1)
-            else -> data
-        }
+        var remainingData = stripSymbologyPrefix(data)
 
         while (remainingData.isNotEmpty()) {
+            // Nach AIs fester Laenge ist kein Trennzeichen vorgesehen; manche Erzeuger
+            // setzen dort trotzdem eins. Ueberspringen statt daran zu scheitern.
+            if (remainingData[0] == FNC1) {
+                remainingData = remainingData.substring(1)
+                continue
+            }
             var foundAi = false
             for (aiLength in 3 downTo 2) {
                 if (remainingData.length >= aiLength) {
@@ -116,6 +117,78 @@ object GS1Parser {
             }
         }
         return parsedData
+    }
+
+    /**
+     * Entfernt AIM-Kennungen (z.B. ]d2, ]C1) und fuehrende FNC1.
+     *
+     * Bewusst in einer Schleife: manche Etiketten tragen die Kennung zusaetzlich als
+     * Nutzdaten im Symbol, sodass sie nach der Kennung des Decoders ein zweites Mal
+     * auftaucht. Ein Elementstring beginnt nie mit "]" – die AI ist immer numerisch
+     * und "]" gehoert nicht zum GS1-Zeichensatz 82 -, deshalb ist das gefahrlos.
+     */
+    internal fun stripSymbologyPrefix(data: String): String {
+        var result = data
+        while (true) {
+            result = when {
+                result.startsWith("]") && result.length >= 3 -> result.substring(3)
+                result.startsWith(FNC1) -> result.substring(1)
+                else -> return result
+            }
+        }
+    }
+
+    /** Ergebnis der Strukturpruefung eines Elementstrings. */
+    data class Validation(
+        /** true, wenn der gesamte Inhalt als Kette bekannter AIs aufgeht. */
+        val complete: Boolean,
+        /** Anzahl erkannter AIs. */
+        val aiCount: Int,
+        /** Rest, der sich nicht mehr zuordnen liess; null wenn alles aufging. */
+        val unparsedRest: String?,
+        /** true, wenn alle erkannten AIs die Plausibilitaetspruefung bestehen. */
+        val plausible: Boolean
+    )
+
+    /**
+     * Prueft, ob [data] vollstaendig als Kette bekannter Application Identifier aufgeht.
+     *
+     * Dient als zweites, inhaltliches Signal neben der AIM-Symbologiekennung: ohne
+     * Kennung kann ein Code hoechstens "wahrscheinlich GS1" sein, und bei vorhandener
+     * Kennung zeigt [Validation.unparsedRest], ab wo die Daten nicht mehr aufgehen.
+     *
+     * Achtung: [aiDefinitions] kennt nur zwei- und dreistellige AIs. Vierstellige wie
+     * (3103) oder (7003) liefern deshalb einen Rest, obwohl der Code gueltig ist.
+     */
+    fun validate(data: String): Validation {
+        var remainingData = stripSymbologyPrefix(data)
+        var aiCount = 0
+        var plausible = true
+
+        while (remainingData.isNotEmpty()) {
+            if (remainingData[0] == FNC1) {
+                remainingData = remainingData.substring(1)
+                continue
+            }
+            var foundAi = false
+            for (aiLength in 3 downTo 2) {
+                if (remainingData.length < aiLength) continue
+                val potentialAi = remainingData.substring(0, aiLength)
+                val ai = aiDefinitions[potentialAi] ?: continue
+                val result = extractData(remainingData.substring(aiLength), ai)
+                // Wert leer oder bei fester Laenge abgeschnitten -> Kette geht nicht auf
+                if (result.value.isEmpty() || (ai.length > 0 && result.value.length != ai.length)) {
+                    return Validation(false, aiCount, remainingData, plausible)
+                }
+                if (!checkPlausibility(potentialAi, result.value).first) plausible = false
+                remainingData = result.remainingData
+                aiCount++
+                foundAi = true
+                break
+            }
+            if (!foundAi) return Validation(false, aiCount, remainingData, plausible)
+        }
+        return Validation(true, aiCount, null, plausible)
     }
 
     private fun extractData(data: String, ai: AI): ExtractionResult {

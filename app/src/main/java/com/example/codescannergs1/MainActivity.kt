@@ -104,6 +104,12 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.codescannergs1.ui.theme.CodeScannerGS1Theme
 import android.graphics.BitmapFactory
+import kotlin.coroutines.resume
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.Dispatchers
+import com.google.mlkit.vision.barcode.BarcodeScanner
+import android.graphics.Bitmap
 import com.example.codescannergs1.composite.CompositeScanner
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -126,8 +132,28 @@ import java.util.concurrent.Executors
 data class ScannedCode(
     val rawValue: String,
     val type: String,
-    val isGs1: Boolean
+    /** true fuer bestaetigtes und wahrscheinliches GS1 – treibt Filter und Export. */
+    val isGs1: Boolean,
+    /** Name eines [Gs1Level]; null bei Verlaufseintraegen aus aelteren Versionen. */
+    val gs1Level: String? = null,
+    /** AIM-Symbologiekennung, etwa "]C1"; null, wenn der Decoder keine geliefert hat. */
+    val symbologyId: String? = null,
+    /** Teil des Inhalts, der sich nicht als AI-Kette lesen liess. */
+    val unparsedRest: String? = null,
+    /** Symbologiekennung, die faelschlich im Symbol codiert ist (Etikettenfehler). */
+    val embeddedSymbologyId: String? = null
 )
+
+/**
+ * Stufe eines Eintrags. Verlaufseintraege aus aelteren Versionen kennen [ScannedCode.gs1Level]
+ * nicht; fuer sie gilt die damalige Einstufung als "wahrscheinlich".
+ */
+fun ScannedCode.gs1LevelOf(): Gs1Level = when (gs1Level) {
+    Gs1Level.CONFIRMED.name -> Gs1Level.CONFIRMED
+    Gs1Level.PROBABLE.name -> Gs1Level.PROBABLE
+    Gs1Level.NONE.name -> Gs1Level.NONE
+    else -> if (isGs1) Gs1Level.PROBABLE else Gs1Level.NONE
+}
 
 data class ScanHistoryEntry(
     val timestamp: Long,
@@ -265,39 +291,48 @@ fun CameraScreen(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri: Uri? ->
             if (uri != null) {
-                val codes = mutableListOf<ScannedCode>()
-
-                // zxing-cpp zuerst: erkennt die DataBar-Familie und den CC-A-Anteil
-                try {
-                    context.contentResolver.openInputStream(uri)?.use { stream ->
-                        BitmapFactory.decodeStream(stream)?.let { bitmap ->
-                            codes += CompositeScanner.scan(bitmap)
-                        }
+                // Das Bild wird genau einmal geladen und beiden Decodern gereicht.
+                // Zweimal zu laden hat den Spitzenbedarf bei einer 9-Megapixel-Aufnahme
+                // auf ueber 80 MB getrieben - auf schwaecheren Geraeten reicht das fuer
+                // einen OutOfMemoryError, und die Meldung lautete dann faelschlich
+                // "keine Barcodes gefunden".
+                scope.launch {
+                    val loaded = withContext(Dispatchers.IO) { loadImage(context, uri) }
+                    if (loaded == null) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.image_not_loaded),
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@launch
                     }
-                } catch (e: Exception) {
-                    Log.w("CameraScreen", "zxing-cpp Galerie-Import fehlgeschlagen", e)
-                }
 
-                fun finish() {
+                    val codes = mutableListOf<ScannedCode>()
+                    try {
+                        // Suche laeuft im Hintergrund: mehrere Profile auf einem grossen
+                        // Bild dauern Sekunden und wuerden die Oberflaeche blockieren.
+                        codes += withContext(Dispatchers.Default) {
+                            CompositeScanner.scan(loaded.bitmap, loaded.rotationDegrees)
+                        }
+                        codes += mlKitToScannedCodes(
+                            scanner.scanBitmap(loaded.bitmap, loaded.rotationDegrees)
+                        )
+                    } catch (e: Exception) {
+                        Log.w("CameraScreen", "Galerie-Import fehlgeschlagen", e)
+                    } finally {
+                        loaded.bitmap.recycle()
+                    }
+
                     val merged = mergeCodes(codes)
                     if (merged.isNotEmpty()) {
                         navigateToResults(merged)
                     } else {
-                        Toast.makeText(context, context.getString(R.string.no_barcodes_found), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.no_barcodes_found),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
-                }
-
-                try {
-                    val image = InputImage.fromFilePath(context, uri)
-                    scanner.process(image)
-                        .addOnSuccessListener { barcodes ->
-                            codes += mlKitToScannedCodes(barcodes)
-                            finish()
-                        }
-                        .addOnFailureListener { finish() }
-                } catch (e: IOException) {
-                    Log.e("CameraScreen", "Fehler beim Laden", e)
-                    finish()
                 }
             }
         }
@@ -694,6 +729,56 @@ private fun buildPlausibilityHint(context: android.content.Context, ai: String, 
     }
 }
 
+/** Gruen fuer bestaetigtes, Bernstein fuer wahrscheinliches GS1. */
+private val GS1_CONFIRMED_COLOR = Color(0xFF4CAF50)
+private val GS1_PROBABLE_COLOR = Color(0xFFB8860B)
+
+/** Auffaellige Farbe fuer Datenfehler im Code – klar von der Einstufung getrennt. */
+private val GS1_ISSUE_COLOR = Color(0xFFD32F2F)
+
+/**
+ * Zeigt, worauf die GS1-Einstufung beruht: auf der AIM-Symbologiekennung
+ * (bestaetigt) oder nur auf dem Inhalt (wahrscheinlich).
+ */
+@Composable
+private fun Gs1Badge(code: ScannedCode) {
+    val level = code.gs1LevelOf()
+    val id = code.symbologyId
+    if (level == Gs1Level.NONE && id == null) return
+
+    val label = when (level) {
+        Gs1Level.CONFIRMED -> stringResource(R.string.gs1_confirmed)
+        Gs1Level.PROBABLE -> stringResource(R.string.gs1_probable)
+        Gs1Level.NONE -> stringResource(R.string.gs1_none)
+    }
+    Text(
+        text = if (id != null) stringResource(R.string.gs1_badge_with_id, label, id) else label,
+        style = MaterialTheme.typography.labelMedium,
+        color = when (level) {
+            Gs1Level.CONFIRMED -> GS1_CONFIRMED_COLOR
+            Gs1Level.PROBABLE -> GS1_PROBABLE_COLOR
+            Gs1Level.NONE -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+    )
+    val embedded = code.embeddedSymbologyId
+    if (level != Gs1Level.NONE && !embedded.isNullOrEmpty()) {
+        Text(
+            text = stringResource(R.string.gs1_embedded_symbology_id, embedded),
+            style = MaterialTheme.typography.labelSmall,
+            color = GS1_ISSUE_COLOR
+        )
+    }
+    val rest = code.unparsedRest
+    if (level == Gs1Level.CONFIRMED && !rest.isNullOrEmpty()) {
+        Text(
+            text = stringResource(R.string.gs1_unknown_ai, rest),
+            style = MaterialTheme.typography.labelSmall,
+            color = GS1_ISSUE_COLOR
+        )
+    }
+    Spacer(modifier = Modifier.height(4.dp))
+}
+
 @Composable
 fun CodeResultItem(code: ScannedCode) {
     val context = LocalContext.current
@@ -712,7 +797,11 @@ fun CodeResultItem(code: ScannedCode) {
                     text = stringResource(R.string.type_label, code.type),
                     modifier = Modifier.weight(1f),
                     fontWeight = FontWeight.Bold,
-                    color = if (code.isGs1) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary
+                    color = when (code.gs1LevelOf()) {
+                        Gs1Level.CONFIRMED -> GS1_CONFIRMED_COLOR
+                        Gs1Level.PROBABLE -> GS1_PROBABLE_COLOR
+                        Gs1Level.NONE -> MaterialTheme.colorScheme.primary
+                    }
                 )
                 IconButton(
                     onClick = {
@@ -734,6 +823,8 @@ fun CodeResultItem(code: ScannedCode) {
                     Icon(imageVector = Icons.Filled.Share, contentDescription = stringResource(R.string.share_code_desc))
                 }
             }
+
+            Gs1Badge(code)
 
             if (code.isGs1) {
                 val parserInput = code.rawValue.replace("<GS>", "\u001d")
@@ -1026,13 +1117,14 @@ private fun removeHistoryEntry(
 }
 
 private fun historyToCsv(history: List<ScanHistoryEntry>): String {
-    val header = "timestamp_iso,type,is_gs1,raw_value"
+    val header = "timestamp_iso,type,is_gs1,gs1_level,symbology_id,raw_value"
     val rows = history.flatMap { entry ->
         val timestampIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
             .format(Date(entry.timestamp))
         entry.codes.map { code ->
             val escapedRaw = code.rawValue.replace("\"", "\"\"")
-            "$timestampIso,${code.type},${code.isGs1},\"$escapedRaw\""
+            "$timestampIso,${code.type},${code.isGs1},${code.gs1LevelOf().name}," +
+                "${code.symbologyId ?: ""},\"$escapedRaw\""
         }
     }
     return (listOf(header) + rows).joinToString("\n")
@@ -1061,37 +1153,136 @@ private fun shareExport(
     }
     context.startActivity(Intent.createChooser(intent, context.getString(R.string.share_export_chooser)))
 }
-fun getCodeString(rawBytes: ByteArray, barcode: Barcode): String {
-    val rawString = String(rawBytes, StandardCharsets.UTF_8)
-    
-    // Steuerzeichen für die Anzeige sichtbar machen
-    val displayValue = rawString.replace("\u001d", "<GS>")
+/** Geladenes Galeriebild samt der Drehung, die die EXIF-Daten vorgeben. */
+private class LoadedImage(val bitmap: Bitmap, val rotationDegrees: Int)
 
-    return when (barcode.format) {
-        Barcode.FORMAT_DATA_MATRIX -> {
-            if (rawBytes.isNotEmpty() && rawBytes[0].toInt() == 29) {
-                if (displayValue.startsWith("<GS>")) "]d2" + displayValue.substring(4) else "]d2$displayValue"
+/**
+ * Laedt ein Galeriebild genau einmal.
+ *
+ * BitmapFactory wertet die EXIF-Ausrichtung nicht aus. Die Bitmap dafuer zu drehen
+ * wuerde bei einer grossen Aufnahme noch einmal denselben Speicher brauchen, deshalb
+ * wird stattdessen der Drehwinkel weitergereicht - sowohl zxing-cpp als auch ML Kit
+ * nehmen ihn entgegen.
+ */
+private fun loadImage(context: android.content.Context, uri: Uri): LoadedImage? {
+    return try {
+        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        if (bytes == null || bytes.isEmpty()) {
+            Log.w("CameraScreen", "Galeriebild ist leer oder nicht lesbar")
+            null
+        } else {
+            val options = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            if (bitmap == null) {
+                Log.w("CameraScreen", "Bild konnte nicht decodiert werden")
+                null
             } else {
-                if (displayValue.startsWith("<GS>")) "]d1" + displayValue.substring(4) else "]d1$displayValue"
+                LoadedImage(bitmap, readExifRotation(bytes))
             }
         }
-        Barcode.FORMAT_CODE_128 -> displayValue
-
-        else -> displayValue
+    } catch (e: Exception) {
+        Log.e("CameraScreen", "Bild konnte nicht geladen werden", e)
+        null
+    } catch (e: OutOfMemoryError) {
+        // Lieber eine klare Meldung als ein Absturz - und vor allem nicht die
+        // irrefuehrende Meldung "keine Barcodes gefunden".
+        Log.e("CameraScreen", "Zu wenig Speicher zum Laden des Bildes", e)
+        null
     }
 }
 
-fun isGS1Code(value: String): Boolean {
-    return value.startsWith("]d2") || value.startsWith("]C1") ||
-            value.startsWith("]e0") || value.contains("<GS>")
+private fun readExifRotation(bytes: ByteArray): Int = try {
+    val exif = android.media.ExifInterface(java.io.ByteArrayInputStream(bytes))
+    when (
+        exif.getAttributeInt(
+            android.media.ExifInterface.TAG_ORIENTATION,
+            android.media.ExifInterface.ORIENTATION_NORMAL
+        )
+    ) {
+        android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90
+        android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180
+        android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270
+        else -> 0
+    }
+} catch (e: Exception) {
+    Log.w("CameraScreen", "EXIF-Ausrichtung nicht lesbar", e)
+    0
 }
 
-fun getBarcodeType(format: Int, value: String): String {
+/** ML Kit auf einer bereits geladenen Bitmap, als suspend-Funktion. */
+private suspend fun BarcodeScanner.scanBitmap(
+    bitmap: Bitmap,
+    rotationDegrees: Int
+): List<Barcode> = suspendCancellableCoroutine { continuation ->
+    process(InputImage.fromBitmap(bitmap, rotationDegrees))
+        .addOnSuccessListener { continuation.resume(it) }
+        .addOnFailureListener {
+            Log.w("CameraScreen", "ML Kit konnte das Bild nicht auswerten", it)
+            continuation.resume(emptyList())
+        }
+}
+
+/**
+ * Wandelt ML-Kit-Ergebnisse in das App-Modell.
+ *
+ * ML Kit gibt die AIM-Symbologiekennung nicht heraus. Positiv ableiten laesst sie sich
+ * trotzdem: FNC1 an erster Symbolposition erscheint im decodierten Datenstrom als 0x1D.
+ * Fehlt es, ist damit aber *nicht* bewiesen, dass kein GS1 vorliegt – deshalb bleibt die
+ * Kennung dann null und der Inhalt entscheidet. Die belastbare Einstufung liefert ohnehin
+ * zxing-cpp; dessen Ergebnis geht beim Zusammenfuehren vor.
+ */
+fun mlKitToScannedCodes(barcodes: List<Barcode>): List<ScannedCode> = barcodes.map { barcode ->
+    val rawBytes = barcode.rawBytes
+    val raw = if (rawBytes != null) String(rawBytes, StandardCharsets.UTF_8) else (barcode.rawValue ?: "")
+    val fnc1First = rawBytes != null && rawBytes.isNotEmpty() && rawBytes[0].toInt() == 29
+
+    val symbologyId = if (!fnc1First) null else when (barcode.format) {
+        Barcode.FORMAT_DATA_MATRIX -> "]d2"
+        Barcode.FORMAT_CODE_128 -> "]C1"
+        Barcode.FORMAT_QR_CODE -> "]Q3"
+        else -> null
+    }
+    val content = if (symbologyId != null) raw.substring(1) else raw
+
+    val classification = Gs1Detector.classify(
+        symbologyId = symbologyId,
+        canCarryElementString = mlKitCanCarryElementString(barcode.format),
+        elementString = content
+    )
+
+    ScannedCode(
+        rawValue = (symbologyId ?: "") + content.replace("\u001d", "<GS>"),
+        type = getBarcodeType(barcode.format, classification.level),
+        isGs1 = classification.isGs1,
+        gs1Level = classification.level.name,
+        symbologyId = symbologyId,
+        unparsedRest = classification.unparsedRest,
+        embeddedSymbologyId = classification.embeddedSymbologyId
+    )
+}
+
+/**
+ * Symbologien, in denen ein GS1-Elementstring ueberhaupt vorkommen kann. Bei EAN/UPC,
+ * ITF, Code 39/93 und Codabar waere eine Inhaltspruefung nur eine Fehlerquelle.
+ */
+private fun mlKitCanCarryElementString(format: Int): Boolean = when (format) {
+    Barcode.FORMAT_CODE_128,
+    Barcode.FORMAT_DATA_MATRIX,
+    Barcode.FORMAT_QR_CODE,
+    Barcode.FORMAT_PDF417,
+    Barcode.FORMAT_AZTEC -> true
+    else -> false
+}
+
+fun getBarcodeType(format: Int, level: Gs1Level): String {
+    val gs1 = level == Gs1Level.CONFIRMED
     return when (format) {
-        Barcode.FORMAT_CODE_128 -> if (value.startsWith("]C1")) "GS1-128" else "Code 128"
-        Barcode.FORMAT_DATA_MATRIX -> if (value.startsWith("]d2")) "GS1 DataMatrix" else "DataMatrix"
+        Barcode.FORMAT_CODE_128 -> if (gs1) "GS1-128" else "Code 128"
+        Barcode.FORMAT_DATA_MATRIX -> if (gs1) "GS1 DataMatrix" else "DataMatrix"
+        Barcode.FORMAT_QR_CODE -> if (gs1) "GS1 QR Code" else "QR Code"
         Barcode.FORMAT_EAN_13 -> "EAN-13"
-        Barcode.FORMAT_QR_CODE -> "QR Code"
         Barcode.FORMAT_EAN_8 -> "EAN-8"
         Barcode.FORMAT_ITF -> "ITF"
         Barcode.FORMAT_UPC_A -> "UPC-A"
@@ -1100,40 +1291,52 @@ fun getBarcodeType(format: Int, value: String): String {
         Barcode.FORMAT_AZTEC -> "Aztec"
         Barcode.FORMAT_CODE_39 -> "Code 39"
         Barcode.FORMAT_CODE_93 -> "Code 93"
-        Barcode.FORMAT_CODABAR -> "Codebar"
+        Barcode.FORMAT_CODABAR -> "Codabar"
         else -> "Format: $format"
     }
-}
-
-/** Wandelt ML-Kit-Ergebnisse in das App-Modell. */
-fun mlKitToScannedCodes(barcodes: List<Barcode>): List<ScannedCode> = barcodes.map { barcode ->
-    val rawBytes = barcode.rawBytes
-    val finalValue = if (rawBytes != null) {
-        getCodeString(rawBytes, barcode)
-    } else {
-        barcode.rawValue ?: ""
-    }
-    ScannedCode(
-        rawValue = finalValue,
-        type = getBarcodeType(barcode.format, finalValue),
-        isGs1 = isGS1Code(finalValue)
-    )
 }
 
 /**
  * Fuehrt die Ergebnisse beider Decoder zusammen.
  *
- * Doppelte Rohwerte entfallen. Liest ein Decoder nur den Linearanteil eines
- * Composite-Symbols und der andere zusaetzlich den CC-A-Anteil, ist der kuerzere
- * Wert ein echtes Praefix des laengeren - dann bleibt nur der vollstaendige Eintrag.
+ * Gruppiert wird nach Inhalt ohne AIM-Kennung, damit derselbe Code von ML Kit und
+ * zxing-cpp nicht doppelt erscheint. Es gewinnt der Eintrag mit der verlaesslicheren
+ * Einstufung – also in aller Regel der von zxing-cpp, der die Kennung mitbringt.
+ * Anschliessend fallen Teilergebnisse weg: liest ein Decoder nur den Linearanteil eines
+ * Composite-Symbols, ist dessen Inhalt ein echtes Praefix des vollstaendigen Eintrags.
  */
 fun mergeCodes(codes: List<ScannedCode>): List<ScannedCode> {
-    val distinct = codes.filter { it.rawValue.isNotEmpty() }.distinctBy { it.rawValue }
-    return distinct.filterNot { candidate ->
-        distinct.any { other ->
-            other.rawValue.length > candidate.rawValue.length &&
-                other.rawValue.startsWith(candidate.rawValue) &&
+    val byContent = LinkedHashMap<String, ScannedCode>()
+    for (code in codes) {
+        if (code.rawValue.isEmpty()) continue
+        val key = contentWithoutSymbologyId(code.rawValue)
+        val existing = byContent[key]
+        if (existing == null || isMoreInformative(code, existing)) byContent[key] = code
+    }
+
+    val kept = byContent.values.toList()
+    return kept.filterNot { candidate ->
+        val candidateContent = contentWithoutSymbologyId(candidate.rawValue)
+        kept.any { other ->
+            val otherContent = contentWithoutSymbologyId(other.rawValue)
+            otherContent.length > candidateContent.length &&
+                otherContent.startsWith(candidateContent) &&
                 other.type.startsWith(candidate.type)
         }
     }
+}
+
+/** Inhalt ohne fuehrende AIM-Kennung, etwa "]C1". */
+private fun contentWithoutSymbologyId(rawValue: String): String =
+    if (rawValue.startsWith("]") && rawValue.length >= 3) rawValue.substring(3) else rawValue
+
+/** Besser ist die verlaesslichere Einstufung, dann die vorhandene Kennung, dann der laengere Inhalt. */
+private fun isMoreInformative(candidate: ScannedCode, current: ScannedCode): Boolean {
+    val a = candidate.gs1LevelOf().ordinal
+    val b = current.gs1LevelOf().ordinal
+    if (a != b) return a > b
+    val hasIdA = candidate.symbologyId != null
+    val hasIdB = current.symbologyId != null
+    if (hasIdA != hasIdB) return hasIdA
+    return candidate.rawValue.length > current.rawValue.length
 }

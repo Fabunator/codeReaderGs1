@@ -52,16 +52,32 @@ class BitmapGrayImage(bitmap: Bitmap, rotation: Int = 0) : GrayImage {
     private val gray = ByteArray(srcWidth * srcHeight)
 
     init {
-        val pixels = IntArray(srcWidth * srcHeight)
-        bitmap.getPixels(pixels, 0, srcWidth, 0, 0, srcWidth, srcHeight)
-        for (i in pixels.indices) {
-            val p = pixels[i]
-            val r = (p shr 16) and 0xFF
-            val g = (p shr 8) and 0xFF
-            val b = p and 0xFF
-            // gleiche Gewichtung wie in zxing-cpp
-            gray[i] = ((r * 77 + g * 150 + b * 29) shr 8).toByte()
+        // Streifenweise lesen. Ein IntArray ueber das ganze Bild waere bei einer
+        // 9-Megapixel-Aufnahme 37 MB zusaetzlich – zusammen mit der Bitmap selbst
+        // reicht das auf schwaecheren Geraeten fuer einen OutOfMemoryError.
+        val stripHeight = maxOf(1, STRIP_PIXELS / maxOf(1, srcWidth))
+        val strip = IntArray(srcWidth * minOf(stripHeight, srcHeight))
+        var y = 0
+        while (y < srcHeight) {
+            val rows = minOf(stripHeight, srcHeight - y)
+            bitmap.getPixels(strip, 0, srcWidth, 0, y, srcWidth, rows)
+            val count = srcWidth * rows
+            val offset = y * srcWidth
+            for (i in 0 until count) {
+                val p = strip[i]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                // gleiche Gewichtung wie in zxing-cpp
+                gray[offset + i] = ((r * 77 + g * 150 + b * 29) shr 8).toByte()
+            }
+            y += rows
         }
+    }
+
+    private companion object {
+        /** Streifengroesse in Pixeln: rund 4 MB Zwischenpuffer. */
+        const val STRIP_PIXELS = 1 shl 20
     }
 
     override val width: Int = if (rot == 90 || rot == 270) srcHeight else srcWidth

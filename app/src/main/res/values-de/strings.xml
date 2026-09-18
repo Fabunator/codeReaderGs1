@@ -52,4 +52,13 @@
     <string name="plausibility_date_format">Datumsformat ungültig. Erwartet JJMMTT (z.B. 260822).</string>
     <string name="plausibility_date_invalid">Datum ist kalendarisch ungültig (JJMMTT).</string>
     <string name="plausibility_checksum_invalid">Prüfziffer ungültig. Code ist evtl. unvollständig oder falsch gescannt.</string>
+
+    <!-- GS1-Einstufung -->
+    <string name="gs1_confirmed">GS1 best\u00e4tigt</string>
+    <string name="gs1_probable">GS1 wahrscheinlich</string>
+    <string name="gs1_none">Kein GS1</string>
+    <string name="gs1_badge_with_id">%1$s \u00b7 %2$s</string>
+    <string name="gs1_unknown_ai">Ab \"%1$s\" keine bekannte AI \u2013 dieser Teil wurde nicht ausgewertet.</string>
+    <string name="gs1_embedded_symbology_id">Die Symbologiekennung \"%1$s\" ist mit im Symbol codiert. Sie wird vom Lesegeraet vorangestellt und geh\u00f6rt nicht in die Daten \u2013 zum Auswerten wurde sie entfernt.</string>
+    <string name="image_not_loaded">Bild konnte nicht geladen werden \u2013 m\u00f6glicherweise zu gro\u00df f\u00fcr den verf\u00fcgbaren Speicher.</string>
 </resources>

@@ -52,4 +52,13 @@
     <string name="plausibility_date_format">Invalid date format. Expected YYMMDD (e.g. 260822).</string>
     <string name="plausibility_date_invalid">Date is calendar-invalid (YYMMDD).</string>
     <string name="plausibility_checksum_invalid">Check digit invalid. Code may be incomplete or scanned incorrectly.</string>
+
+    <!-- GS1-Einstufung -->
+    <string name="gs1_confirmed">GS1 confirmed</string>
+    <string name="gs1_probable">GS1 probable</string>
+    <string name="gs1_none">Not GS1</string>
+    <string name="gs1_badge_with_id">%1$s \u00b7 %2$s</string>
+    <string name="gs1_unknown_ai">No known AI from \"%1$s\" onwards \u2013 this part was not evaluated.</string>
+    <string name="gs1_embedded_symbology_id">The symbology identifier \"%1$s\" is also encoded in the symbol. It is added by the reader and does not belong in the data \u2013 it was removed for parsing.</string>
+    <string name="image_not_loaded">Image could not be loaded \u2013 it may be too large for the available memory.</string>
 </resources>
