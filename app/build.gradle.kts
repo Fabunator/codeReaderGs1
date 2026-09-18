@@ -57,6 +57,7 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.gson)
+    implementation(libs.zxingcpp)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

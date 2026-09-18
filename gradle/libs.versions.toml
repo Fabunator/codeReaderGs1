@@ -12,6 +12,7 @@ mlkit-barcode-scanning = "17.3.0"
 camerax = "1.5.3"
 navigationCompose = "2.8.3"
 gson = "2.10.1"
+zxingcpp = "3.1.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -36,6 +37,7 @@ androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycl
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+zxingcpp = { group = "io.github.zxing-cpp", name = "android", version.ref = "zxingcpp" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

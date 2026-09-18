@@ -103,6 +103,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.codescannergs1.ui.theme.CodeScannerGS1Theme
+import android.graphics.BitmapFactory
+import com.example.codescannergs1.composite.CompositeScanner
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
@@ -249,25 +251,13 @@ fun CameraScreen(
     }
     val scanner = remember { BarcodeScanning.getClient(options) }
 
-    fun navigateToResults(barcodes: List<Barcode>) {
-        val scannedCodes = barcodes.map { barcode ->
-            val rawBytes = barcode.rawBytes
-            val finalValue = if (rawBytes != null) {
-                getCodeString(rawBytes, barcode)
-            } else {
-                barcode.rawValue ?: ""
-            }
-            ScannedCode(
-                rawValue = finalValue,
-                type = getBarcodeType(barcode.format, finalValue),
-                isGs1 = isGS1Code(finalValue)
-            )
-        }
-        
+    fun navigateToResults(scannedCodes: List<ScannedCode>) {
+        if (scannedCodes.isEmpty()) return
+
         appendHistoryEntry(context, scannedCodes)
         val codesJson = Gson().toJson(scannedCodes)
         val encodedJson = URLEncoder.encode(codesJson, StandardCharsets.UTF_8.toString())
-        
+
         navController.navigate("result/$encodedJson/false")
     }
 
@@ -275,18 +265,39 @@ fun CameraScreen(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri: Uri? ->
             if (uri != null) {
+                val codes = mutableListOf<ScannedCode>()
+
+                // zxing-cpp zuerst: erkennt die DataBar-Familie und den CC-A-Anteil
+                try {
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        BitmapFactory.decodeStream(stream)?.let { bitmap ->
+                            codes += CompositeScanner.scan(bitmap)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("CameraScreen", "zxing-cpp Galerie-Import fehlgeschlagen", e)
+                }
+
+                fun finish() {
+                    val merged = mergeCodes(codes)
+                    if (merged.isNotEmpty()) {
+                        navigateToResults(merged)
+                    } else {
+                        Toast.makeText(context, context.getString(R.string.no_barcodes_found), Toast.LENGTH_SHORT).show()
+                    }
+                }
+
                 try {
                     val image = InputImage.fromFilePath(context, uri)
                     scanner.process(image)
                         .addOnSuccessListener { barcodes ->
-                            if (barcodes.isNotEmpty()) {
-                                navigateToResults(barcodes)
-                            } else {
-                                Toast.makeText(context, context.getString(R.string.no_barcodes_found), Toast.LENGTH_SHORT).show()
-                            }
+                            codes += mlKitToScannedCodes(barcodes)
+                            finish()
                         }
+                        .addOnFailureListener { finish() }
                 } catch (e: IOException) {
                     Log.e("CameraScreen", "Fehler beim Laden", e)
+                    finish()
                 }
             }
         }
@@ -330,48 +341,47 @@ fun CameraScreen(
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
 
-                val lastDetectedBarcodes = mutableListOf<Barcode>()
+                val detectedCodes = mutableListOf<ScannedCode>()
                 var lastDetectionTime = System.currentTimeMillis()
 
                 imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
                     val image = imageProxy.image
-                    if (image != null) {
-                        val processImage = InputImage.fromMediaImage(image, imageProxy.imageInfo.rotationDegrees)
-                        scanner.process(processImage)
-                            .addOnSuccessListener { barcodes ->
-                                var newCodeAdded = false
-                                if (barcodes.isNotEmpty()) {
-
-                                    barcodes.forEach { newBarcode ->
-
-                                        val alreadyExists = lastDetectedBarcodes.any {
-                                            it.rawValue == newBarcode.rawValue
-                                        }
-
-                                        if (!alreadyExists) {
-                                            lastDetectedBarcodes.add(newBarcode)
-                                            newCodeAdded = true
-                                        }
-
-                                        if (newCodeAdded) {
-                                            lastDetectionTime = System.currentTimeMillis()
-                                        }
-                                    }
-                                }
-
-                                if (lastDetectedBarcodes.isNotEmpty() &&
-                                    System.currentTimeMillis() - lastDetectionTime > 1000
-                                ) {
-                                    imageAnalysis.clearAnalyzer()
-                                    navigateToResults(lastDetectedBarcodes)
-                                }
-                            }
-                            .addOnCompleteListener {
-                                imageProxy.close()
-                            }
-                    } else {
+                    if (image == null) {
                         imageProxy.close()
+                        return@setAnalyzer
                     }
+
+                    // zxing-cpp laeuft synchron auf diesem Executor, solange der
+                    // ImageProxy noch offen ist: DataBar-Familie, MicroPDF417 und
+                    // der CC-A-Anteil eines GS1 DataBar Limited CC-A.
+                    val zxingCodes = CompositeScanner.scan(imageProxy)
+
+                    val processImage = InputImage.fromMediaImage(image, imageProxy.imageInfo.rotationDegrees)
+                    scanner.process(processImage)
+                        .addOnSuccessListener { barcodes ->
+                            val fresh = zxingCodes + mlKitToScannedCodes(barcodes)
+                            var newCodeAdded = false
+                            fresh.forEach { candidate ->
+                                val alreadyExists = detectedCodes.any { it.rawValue == candidate.rawValue }
+                                if (!alreadyExists) {
+                                    detectedCodes.add(candidate)
+                                    newCodeAdded = true
+                                }
+                            }
+                            if (newCodeAdded) {
+                                lastDetectionTime = System.currentTimeMillis()
+                            }
+
+                            if (detectedCodes.isNotEmpty() &&
+                                System.currentTimeMillis() - lastDetectionTime > 1000
+                            ) {
+                                imageAnalysis.clearAnalyzer()
+                                navigateToResults(mergeCodes(detectedCodes))
+                            }
+                        }
+                        .addOnCompleteListener {
+                            imageProxy.close()
+                        }
                 }
 
                 cameraProviderFuture.addListener({
@@ -1072,7 +1082,8 @@ fun getCodeString(rawBytes: ByteArray, barcode: Barcode): String {
 }
 
 fun isGS1Code(value: String): Boolean {
-    return value.startsWith("]d2") || value.startsWith("]C1") || value.contains("<GS>")
+    return value.startsWith("]d2") || value.startsWith("]C1") ||
+            value.startsWith("]e0") || value.contains("<GS>")
 }
 
 fun getBarcodeType(format: Int, value: String): String {
@@ -1094,18 +1105,35 @@ fun getBarcodeType(format: Int, value: String): String {
     }
 }
 
+/** Wandelt ML-Kit-Ergebnisse in das App-Modell. */
+fun mlKitToScannedCodes(barcodes: List<Barcode>): List<ScannedCode> = barcodes.map { barcode ->
+    val rawBytes = barcode.rawBytes
+    val finalValue = if (rawBytes != null) {
+        getCodeString(rawBytes, barcode)
+    } else {
+        barcode.rawValue ?: ""
+    }
+    ScannedCode(
+        rawValue = finalValue,
+        type = getBarcodeType(barcode.format, finalValue),
+        isGs1 = isGS1Code(finalValue)
+    )
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+/**
+ * Fuehrt die Ergebnisse beider Decoder zusammen.
+ *
+ * Doppelte Rohwerte entfallen. Liest ein Decoder nur den Linearanteil eines
+ * Composite-Symbols und der andere zusaetzlich den CC-A-Anteil, ist der kuerzere
+ * Wert ein echtes Praefix des laengeren - dann bleibt nur der vollstaendige Eintrag.
+ */
+fun mergeCodes(codes: List<ScannedCode>): List<ScannedCode> {
+    val distinct = codes.filter { it.rawValue.isNotEmpty() }.distinctBy { it.rawValue }
+    return distinct.filterNot { candidate ->
+        distinct.any { other ->
+            other.rawValue.length > candidate.rawValue.length &&
+                other.rawValue.startsWith(candidate.rawValue) &&
+                other.type.startsWith(candidate.type)
+        }
+    }
+}
