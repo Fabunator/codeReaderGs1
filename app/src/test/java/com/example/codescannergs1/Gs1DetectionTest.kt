@@ -209,4 +209,70 @@ class Gs1DetectionTest {
         assertEquals("]C1", result.embeddedSymbologyId)
         assertNull("Inhalt geht nach dem Entfernen auf", result.unparsedRest)
     }
+
+    // ------------------------------------------------------------------
+    // Kennung, die der Decoder selbst voranstellt
+    // ------------------------------------------------------------------
+
+    @Test
+    fun readerSuppliedPrefixIsSeparatedFromTheContent() {
+        // ML Kit gibt bei Code 128 keine eigene Kennung heraus, sondern stellt sie den
+        // Nutzdaten voran. Real gemessen an einem SSCC-Etikett.
+        val (id, content) = Gs1Detector.splitSymbologyId("]C100742515207000000580", 'C')
+        assertEquals("]C1", id)
+        assertEquals("00742515207000000580", content)
+    }
+
+    @Test
+    fun splittingOnlyAcceptsTheMatchingSymbology() {
+        // falscher Buchstabe zur Symbologie
+        assertNull(Gs1Detector.splitSymbologyId("]Q30104012345678901", 'C').first)
+        // kein bekannter Buchstabe fuer dieses Format
+        assertNull(Gs1Detector.splitSymbologyId("]C10104012345678901", null).first)
+        // drittes Zeichen ist keine Ziffer
+        assertNull(Gs1Detector.splitSymbologyId("]Cx0104012345678901", 'C').first)
+        // gewoehnlicher Text, der zufaellig mit "]" beginnt, bleibt unveraendert
+        val (id, rest) = Gs1Detector.splitSymbologyId("]xy etwas Text", 'C')
+        assertNull(id)
+        assertEquals("]xy etwas Text", rest)
+    }
+
+    @Test
+    fun gs1128IsNotReportedAsFaultyLabel() {
+        // Der gemeldete Fehler: an jedem GS1-128 erschien der Hinweis, "]C1" sei mit
+        // im Symbol codiert. Das war die Kennung des Decoders, nicht der Inhalt.
+        val (id, content) = Gs1Detector.splitSymbologyId("]C100742515207000000580", 'C')
+        val result = Gs1Detector.classify(id, true, content)
+        assertEquals(Gs1Level.CONFIRMED, result.level)
+        assertNull("kein Etikettenfehler", result.embeddedSymbologyId)
+    }
+
+    @Test
+    fun contentStartingWithAnIdentifierProvesNothingWithoutAReportedId() {
+        // Ohne eigene Angabe des Decoders laesst sich nicht entscheiden, ob die Kennung
+        // vom Leser stammt oder im Symbol steht. Dann wird nichts gemeldet.
+        val result = Gs1Detector.classify(null, true, "]C100742515207000000580")
+        assertNull(result.embeddedSymbologyId)
+    }
+
+    @Test
+    fun doubledIdentifierIsStillFoundAfterSplitting() {
+        // Steht die Kennung wirklich im Symbol, bleibt sie nach dem Abtrennen der
+        // Leser-Kennung uebrig - und wird gemeldet.
+        val raw = "]d2]d201084330420215731726022810V999"
+        val (id, content) = Gs1Detector.splitSymbologyId(raw, 'd')
+        assertEquals("]d2", id)
+        val result = Gs1Detector.classify(id, true, content)
+        assertEquals(Gs1Level.CONFIRMED, result.level)
+        assertEquals("]d2", result.embeddedSymbologyId)
+        assertNull("Inhalt geht auf", result.unparsedRest)
+    }
+
+    @Test
+    fun ssccElementStringParsesCompletely() {
+        val v = GS1Parser.validate("00742515207000000580")
+        assertTrue("SSCC muss vollstaendig aufgehen", v.complete)
+        assertEquals(1, v.aiCount)
+        assertNull(v.unparsedRest)
+    }
 }

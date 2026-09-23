@@ -39,6 +39,12 @@ data class Gs1Classification(
      * Die Kennung stellt der Lesegeraet voran, sie gehoert nicht in die Nutzdaten.
      * Steht sie trotzdem drin, liefert jedes normgerechte Lesegeraet sie doppelt und
      * GS1-Parser scheitern daran – ein Etikettenfehler, der gemeldet werden muss.
+     *
+     * Belegt ist das aber erst, wenn die Kennung **zweimal** auftaucht: einmal als
+     * eigene Angabe des Decoders und noch einmal am Anfang des Inhalts. Ein Inhalt,
+     * der bloss mit einer Kennung *beginnt*, beweist nichts – manche Decoder stellen
+     * sie selbst in die Nutzdaten, statt sie getrennt zu melden. Genau daran wurde
+     * frueher jeder GS1-128 faelschlich als fehlerhaftes Etikett gemeldet.
      */
     val embeddedSymbologyId: String?
 ) {
@@ -93,7 +99,7 @@ object Gs1Detector {
         elementString: String
     ): Gs1Classification {
         val fromId = levelFromSymbologyId(symbologyId)
-        val embedded = embeddedSymbologyId(elementString)
+        val embedded = doubledSymbologyId(symbologyId, elementString)
 
         if (fromId == Gs1Level.CONFIRMED) {
             val validation = GS1Parser.validate(elementString)
@@ -118,14 +124,39 @@ object Gs1Detector {
     /**
      * Findet eine faelschlich mit codierte Symbologiekennung am Anfang der Nutzdaten.
      *
-     * Ein GS1-Elementstring beginnt immer mit einer numerischen AI; "]" gehoert nicht
-     * zum GS1-Zeichensatz 82 und kann dort auch sonst nicht stehen. Ein fuehrendes
-     * "]" plus zwei Zeichen ist daher eindeutig eine mit codierte Kennung.
+     * Gemeldet wird nur die *nachweisbare* Doppelung: der Decoder hat die Kennung
+     * getrennt gemeldet **und** dieselbe Kennung steht noch einmal am Anfang des
+     * Inhalts. Nur dann steckt sie wirklich im Symbol.
+     *
+     * Ein Inhalt, der lediglich mit einer Kennung beginnt, waehrend der Decoder keine
+     * eigene gemeldet hat, ist dagegen kein Beleg: dann hat der Decoder sie selbst in
+     * die Nutzdaten geschrieben, statt sie getrennt herauszugeben. Wer das nicht
+     * unterscheidet, meldet jeden GS1-128 als fehlerhaftes Etikett.
+     *
+     * Das Abtrennen einer vom Decoder vorangestellten Kennung erledigt
+     * [splitSymbologyId], bevor ueberhaupt eingestuft wird.
      */
-    private fun embeddedSymbologyId(elementString: String): String? =
-        if (elementString.length >= 3 && elementString[0] == ']') {
-            elementString.substring(0, 3)
-        } else {
-            null
-        }
+    private fun doubledSymbologyId(symbologyId: String?, elementString: String): String? {
+        val id = symbologyId ?: return null
+        return if (id.length == 3 && elementString.startsWith(id)) id else null
+    }
+
+    /**
+     * Trennt eine vom Lesegeraet vorangestellte AIM-Kennung vom Inhalt.
+     *
+     * Notwendig fuer Decoder, die die Kennung nicht getrennt herausgeben, sondern in
+     * die Nutzdaten stellen. Ohne diese Trennung landet etwa "]C1" im Elementstring,
+     * und ein GS1-Inhalt faengt scheinbar nicht mit einer AI an.
+     *
+     * Damit nicht irgendein Text zerschnitten wird, der zufaellig mit "]" beginnt, muss
+     * der Buchstabe zur Symbologie passen ([symbologyLetter] nach ISO/IEC 15424) und
+     * das dritte Zeichen eine Ziffer sein.
+     *
+     * @return die Kennung (oder null) und der Inhalt ohne sie
+     */
+    fun splitSymbologyId(raw: String, symbologyLetter: Char?): Pair<String?, String> {
+        if (symbologyLetter == null || raw.length < 3) return null to raw
+        if (raw[0] != ']' || raw[1] != symbologyLetter || !raw[2].isDigit()) return null to raw
+        return raw.substring(0, 3) to raw.substring(3)
+    }
 }

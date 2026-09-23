@@ -397,10 +397,19 @@ fun CameraScreen(
                             val fresh = zxingCodes + mlKitToScannedCodes(barcodes)
                             var newCodeAdded = false
                             fresh.forEach { candidate ->
-                                val alreadyExists = detectedCodes.any { it.rawValue == candidate.rawValue }
-                                if (!alreadyExists) {
+                                // Nach Inhalt vergleichen, nicht nach Rohwert: derselbe
+                                // Code kommt von beiden Decodern und faellt sonst je nach
+                                // Bild mal so, mal so aus. Wer schon da ist, wird durch den
+                                // aussagekraeftigeren Eintrag ersetzt - sonst bliebe fuer
+                                // immer der erste stehen, und das ist oft der schlechtere.
+                                val index = detectedCodes.indexOfFirst {
+                                    sameCode(it, candidate)
+                                }
+                                if (index < 0) {
                                     detectedCodes.add(candidate)
                                     newCodeAdded = true
+                                } else if (isMoreInformative(candidate, detectedCodes[index])) {
+                                    detectedCodes[index] = candidate
                                 }
                             }
                             if (newCodeAdded) {
@@ -1227,8 +1236,14 @@ private suspend fun BarcodeScanner.scanBitmap(
 /**
  * Wandelt ML-Kit-Ergebnisse in das App-Modell.
  *
- * ML Kit gibt die AIM-Symbologiekennung nicht heraus. Positiv ableiten laesst sie sich
- * trotzdem: FNC1 an erster Symbolposition erscheint im decodierten Datenstrom als 0x1D.
+ * ML Kit gibt die AIM-Symbologiekennung nicht als eigenes Feld heraus. Zwei Wege bleiben.
+ *
+ * Erstens: bei Code 128 stellt ML Kit die Kennung den Nutzdaten voran ("]C1..."). Sie
+ * muss abgetrennt werden, sonst beginnt der Elementstring scheinbar nicht mit einer AI
+ * und sieht aus wie ein Etikett, in dem die Kennung mit codiert wurde.
+ *
+ * Zweitens: sonst laesst sie sich positiv ableiten
+ * - FNC1 an erster Symbolposition erscheint im decodierten Datenstrom als 0x1D.
  * Fehlt es, ist damit aber *nicht* bewiesen, dass kein GS1 vorliegt – deshalb bleibt die
  * Kennung dann null und der Inhalt entscheidet. Die belastbare Einstufung liefert ohnehin
  * zxing-cpp; dessen Ergebnis geht beim Zusammenfuehren vor.
@@ -1236,31 +1251,80 @@ private suspend fun BarcodeScanner.scanBitmap(
 fun mlKitToScannedCodes(barcodes: List<Barcode>): List<ScannedCode> = barcodes.map { barcode ->
     val rawBytes = barcode.rawBytes
     val raw = if (rawBytes != null) String(rawBytes, StandardCharsets.UTF_8) else (barcode.rawValue ?: "")
-    val fnc1First = rawBytes != null && rawBytes.isNotEmpty() && rawBytes[0].toInt() == 29
+    mlKitResultToScannedCode(barcode.format, raw)
+}
 
-    val symbologyId = if (!fnc1First) null else when (barcode.format) {
-        Barcode.FORMAT_DATA_MATRIX -> "]d2"
-        Barcode.FORMAT_CODE_128 -> "]C1"
-        Barcode.FORMAT_QR_CODE -> "]Q3"
-        else -> null
+/**
+ * Die eigentliche Auswertung, getrennt vom ML-Kit-Objekt.
+ *
+ * `Barcode` laesst sich in einem Test nicht erzeugen - es hat keinen oeffentlichen
+ * Konstruktor. Format und Rohinhalt dagegen schon, und mehr braucht die Auswertung
+ * nicht. Deshalb steht sie hier fuer sich.
+ */
+internal fun mlKitResultToScannedCode(format: Int, raw: String): ScannedCode {
+    // Erst eine Kennung abtrennen, die ML Kit selbst vorangestellt hat. Bei Code 128
+    // liefert es "]C1..." statt die Kennung getrennt herauszugeben; ohne das Abtrennen
+    // steckt sie im Elementstring und sieht aus wie ein Etikettenfehler.
+    val (prefixId, afterPrefix) = Gs1Detector.splitSymbologyId(raw, mlKitSymbologyLetter(format))
+
+    // Sonst bleibt FNC1 an erster Stelle als Hinweis - im decodierten Datenstrom 0x1D.
+    var symbologyId = prefixId
+    if (symbologyId == null && afterPrefix.startsWith(FNC1)) {
+        symbologyId = when (format) {
+            Barcode.FORMAT_DATA_MATRIX -> "]d2"
+            Barcode.FORMAT_CODE_128 -> "]C1"
+            Barcode.FORMAT_QR_CODE -> "]Q3"
+            else -> null
+        }
     }
-    val content = if (symbologyId != null) raw.substring(1) else raw
+    // Ein fuehrendes FNC1 ist die Markierung selbst und gehoert nicht in den Inhalt;
+    // ein Elementstring beginnt immer mit einer Ziffer.
+    val content = if (symbologyId != null && afterPrefix.startsWith(FNC1)) {
+        afterPrefix.substring(1)
+    } else {
+        afterPrefix
+    }
 
     val classification = Gs1Detector.classify(
         symbologyId = symbologyId,
-        canCarryElementString = mlKitCanCarryElementString(barcode.format),
+        canCarryElementString = mlKitCanCarryElementString(format),
         elementString = content
     )
 
-    ScannedCode(
-        rawValue = (symbologyId ?: "") + content.replace("\u001d", "<GS>"),
-        type = getBarcodeType(barcode.format, classification.level),
+    return ScannedCode(
+        rawValue = (symbologyId ?: "") + content.replace(FNC1, "<GS>"),
+        type = getBarcodeType(format, classification.level),
         isGs1 = classification.isGs1,
         gs1Level = classification.level.name,
         symbologyId = symbologyId,
         unparsedRest = classification.unparsedRest,
         embeddedSymbologyId = classification.embeddedSymbologyId
     )
+}
+
+/** Gruppentrennzeichen, wie es im decodierten Datenstrom erscheint. */
+private const val FNC1 = "\u001d"
+
+/**
+ * Buchstabe der AIM-Symbologiekennung nach ISO/IEC 15424, etwa 'C' fuer Code 128.
+ *
+ * Nur damit laesst sich eine vom Decoder vorangestellte Kennung sicher vom Inhalt
+ * trennen: ein Text, der zufaellig mit "]" beginnt, passt fast nie zum Buchstaben der
+ * gelesenen Symbologie.
+ */
+private fun mlKitSymbologyLetter(format: Int): Char? = when (format) {
+    Barcode.FORMAT_CODE_128 -> 'C'
+    Barcode.FORMAT_DATA_MATRIX -> 'd'
+    Barcode.FORMAT_QR_CODE -> 'Q'
+    Barcode.FORMAT_PDF417 -> 'L'
+    Barcode.FORMAT_AZTEC -> 'z'
+    Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8,
+    Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E -> 'E'
+    Barcode.FORMAT_ITF -> 'I'
+    Barcode.FORMAT_CODE_39 -> 'A'
+    Barcode.FORMAT_CODE_93 -> 'G'
+    Barcode.FORMAT_CODABAR -> 'F'
+    else -> null
 }
 
 /**
@@ -1326,9 +1390,24 @@ fun mergeCodes(codes: List<ScannedCode>): List<ScannedCode> {
     }
 }
 
-/** Inhalt ohne fuehrende AIM-Kennung, etwa "]C1". */
-private fun contentWithoutSymbologyId(rawValue: String): String =
-    if (rawValue.startsWith("]") && rawValue.length >= 3) rawValue.substring(3) else rawValue
+/**
+ * Inhalt ohne fuehrende AIM-Kennung, etwa "]C1".
+ *
+ * Entfernt in einer Schleife: steht die Kennung zusaetzlich im Symbol, taucht sie
+ * zweimal auf. Beide Decoder muessen denselben Schluessel ergeben, sonst erscheint
+ * derselbe Code doppelt in der Liste.
+ */
+private fun contentWithoutSymbologyId(rawValue: String): String {
+    var rest = rawValue
+    while (rest.length >= 3 && rest[0] == ']' && rest[1].isLetter() && rest[2].isLetterOrDigit()) {
+        rest = rest.substring(3)
+    }
+    return rest
+}
+
+/** Zwei Eintraege meinen denselben Code, wenn ihr Inhalt ohne AIM-Kennung gleich ist. */
+private fun sameCode(a: ScannedCode, b: ScannedCode): Boolean =
+    contentWithoutSymbologyId(a.rawValue) == contentWithoutSymbologyId(b.rawValue)
 
 /** Besser ist die verlaesslichere Einstufung, dann die vorhandene Kennung, dann der laengere Inhalt. */
 private fun isMoreInformative(candidate: ScannedCode, current: ScannedCode): Boolean {
