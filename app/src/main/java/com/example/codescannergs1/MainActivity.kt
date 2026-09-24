@@ -695,7 +695,7 @@ fun buildHighlightedGS1String(value: String, parsedData: Map<String, String>): A
                 i += 4
                 continue
             }
-            // AI erkennen (2-3 Ziffern am Anfang eines Segments)
+            // AI erkennen (2-4 Ziffern am Anfang eines Segments)
             parsedData.forEach { (ai, aiValue) ->
                 if (value[i].isDigit()) {
                     if (value.startsWith(ai, i) && value.startsWith(aiValue, i + ai.length)) {
@@ -837,8 +837,8 @@ fun CodeResultItem(code: ScannedCode) {
 
             if (code.isGs1) {
                 val parserInput = code.rawValue.replace("<GS>", "\u001d")
-                val parsedDataRaw = GS1Parser.parse(parserInput, formatDatesForDisplay = false)
-                val parsedData = GS1Parser.parse(parserInput, formatDatesForDisplay = true)
+                val parsedDataRaw = GS1Parser.parse(parserInput, formatForDisplay = false)
+                val parsedData = GS1Parser.parse(parserInput, formatForDisplay = true)
                 Text(
                     text = buildAnnotatedString {
                         append(stringResource(R.string.raw_data_label) + "\n")
@@ -875,6 +875,14 @@ fun CodeResultItem(code: ScannedCode) {
                                     contentDescription = stringResource(R.string.copy_ai_value_desc)
                                 )
                             }
+                        }
+                        // Ausfuehrliche GS1-Bezeichnung unter dem Kurzzeichen
+                        GS1Parser.aiDefinitions[ai]?.description?.let { description ->
+                            Text(
+                                text = description,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                         if (!plausibility) {
                             Text(
