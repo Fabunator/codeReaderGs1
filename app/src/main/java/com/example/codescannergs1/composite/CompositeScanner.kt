@@ -88,6 +88,13 @@ object CompositeScanner {
         val denoise: Boolean
     )
 
+    /**
+     * Obergrenze je Bild. Industriekameras liefern Paletten- oder Kartonlagen mit 70 und
+     * mehr Codes in einer Aufnahme; mit der frueheren Grenze von 8 waeren die uebrigen
+     * stillschweigend verworfen worden.
+     */
+    private const val MAX_SYMBOLS = 100
+
     private val PROFILES = listOf(
         Profile("Standard", BarcodeReader.Binarizer.LOCAL_AVERAGE, false),
         Profile("Punktdruck", BarcodeReader.Binarizer.LOCAL_AVERAGE, true),
@@ -113,9 +120,19 @@ object CompositeScanner {
                 tryDownscale = TRY_DOWNSCALE,
                 tryDenoise = profile.denoise,
                 binarizer = profile.binarizer,
-                maxNumberOfSymbols = 8
+                maxNumberOfSymbols = MAX_SYMBOLS
             )
         }
+
+    /** Kantenlaenge und Schritt der Kacheln beim Lesen grosser Aufnahmen. */
+    private const val TILE_SIZE = 700
+    private const val TILE_STEP = 500
+
+    /** Erst ab dieser langen Seite wird zusaetzlich in Kacheln gelesen. */
+    private const val TILE_MIN_LONG_SIDE = 2000
+
+    /** Verwendete Profile je Kachel: Standard und Punktdruck mit Histogramm. */
+    private val TILE_PROFILES = listOf(0, 3)
 
     private val readers: List<BarcodeReader> by lazy { readerOptions().map { BarcodeReader(it) } }
 
@@ -196,7 +213,141 @@ object CompositeScanner {
                 }
             }
         }
+
+        // Grosse Industrieaufnahmen (viele kleine, kontrastarme Codes) zusaetzlich
+        // kachelweise lesen.
+        if (longSide > TILE_MIN_LONG_SIDE) collectTiled(bitmap, rotationDegrees, found)
         return found.values.toList()
+    }
+
+    /**
+     * Kachelweise lesen, mit Kontrastspreizung je Kachel und in 1x und 2x.
+     *
+     * Gemessen an Aufnahmen einer Industriekamera mit 70 Data-Matrix-Codes auf 18
+     * Megapixeln: das ganze Bild liefert je nach Verfahren nur 46 bis 62 Codes, weil
+     *  - das Bild insgesamt dunkel ist (die Codes nutzen oft nur ein Viertel des
+     *    Grauwertbereichs), eine **Kontrastspreizung je Kachel** also entscheidend ist,
+     *  - die Module nur 3 bis 5 Pixel gross sind und erst **vergroessert** sicher
+     *    gefunden werden,
+     *  - die Suche im Gesamtbild bei vielen Symbolen Kandidaten verwirft.
+     * Mit Kacheln von [TILE_SIZE] Pixeln, Schritt [TILE_STEP], werden alle 70 gelesen.
+     * Es genuegen zwei Profile; mehr bringt auf diesen Bildern nichts.
+     */
+    private fun collectTiled(
+        bitmap: Bitmap,
+        rotationDegrees: Int,
+        into: MutableMap<String, ScannedCode>
+    ) {
+        val width = bitmap.width
+        val height = bitmap.height
+        val xs = tileStarts(width)
+        val ys = tileStarts(height)
+        val pixels = IntArray(TILE_SIZE * TILE_SIZE)
+        for (y in ys) {
+            for (x in xs) {
+                val w = minOf(TILE_SIZE, width - x)
+                val h = minOf(TILE_SIZE, height - y)
+                val tile = try {
+                    stretchedTile(bitmap, x, y, w, h, pixels)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Kachel konnte nicht erzeugt werden", e)
+                    return
+                }
+                try {
+                    readTile(tile, rotationDegrees, into)
+                    val big = try {
+                        Bitmap.createScaledBitmap(tile, w * 2, h * 2, true)
+                    } catch (e: Throwable) {
+                        null
+                    }
+                    if (big != null) {
+                        try {
+                            readTile(big, rotationDegrees, into)
+                        } finally {
+                            big.recycle()
+                        }
+                    }
+                } finally {
+                    tile.recycle()
+                }
+            }
+        }
+    }
+
+    /** Startpositionen der Kacheln; die letzte schliesst buendig mit dem Bildrand ab. */
+    private fun tileStarts(length: Int): List<Int> {
+        val last = maxOf(length - TILE_SIZE, 0)
+        val starts = ArrayList<Int>()
+        var p = 0
+        while (p < last) {
+            starts += p
+            p += TILE_STEP
+        }
+        starts += last
+        return starts
+    }
+
+    private fun readTile(
+        tile: Bitmap,
+        rotationDegrees: Int,
+        into: MutableMap<String, ScannedCode>
+    ) {
+        val gray: GrayImage by lazy { BitmapGrayImage(tile, rotationDegrees) }
+        for (index in TILE_PROFILES) {
+            val results = try {
+                readers[index].read(tile, android.graphics.Rect(), rotationDegrees)
+            } catch (e: Exception) {
+                Log.w(TAG, "zxing-cpp konnte die Kachel nicht auswerten", e)
+                continue
+            }
+            for (result in results) {
+                val code = toScannedCode(result) { gray } ?: continue
+                if (!into.containsKey(code.rawValue)) into[code.rawValue] = code
+            }
+        }
+    }
+
+    /**
+     * Schneidet eine Kachel aus und spreizt ihren Kontrast linear zwischen dem 1.- und
+     * dem 99,5-Prozent-Perzentil der Helligkeit. Das Ergebnis ist ein Graustufenbild.
+     */
+    private fun stretchedTile(
+        source: Bitmap,
+        x: Int,
+        y: Int,
+        w: Int,
+        h: Int,
+        pixels: IntArray
+    ): Bitmap {
+        source.getPixels(pixels, 0, w, x, y, w, h)
+        val count = w * h
+        val histogram = IntArray(256)
+        for (i in 0 until count) {
+            val c = pixels[i]
+            val luma = (((c shr 16) and 0xFF) * 77 + ((c shr 8) and 0xFF) * 151 + (c and 0xFF) * 28) shr 8
+            pixels[i] = luma
+            histogram[luma]++
+        }
+        val lo = percentile(histogram, count, 0.01)
+        val hi = percentile(histogram, count, 0.995)
+        val span = maxOf(hi - lo, 8)
+        for (i in 0 until count) {
+            val v = ((pixels[i] - lo) * 255 / span).coerceIn(0, 255)
+            pixels[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+        }
+        val tile = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        tile.setPixels(pixels, 0, w, 0, 0, w, h)
+        return tile
+    }
+
+    private fun percentile(histogram: IntArray, count: Int, fraction: Double): Int {
+        val target = (count * fraction).toInt()
+        var sum = 0
+        for (v in 0..255) {
+            sum += histogram[v]
+            if (sum > target) return v
+        }
+        return 255
     }
 
     /** Liest [bitmap] mit allen Profilen und sammelt neue Ergebnisse in [into]. */
