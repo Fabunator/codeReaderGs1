@@ -61,4 +61,6 @@
     <string name="gs1_unknown_ai">Ab \"%1$s\" keine bekannte AI \u2013 dieser Teil wurde nicht ausgewertet.</string>
     <string name="gs1_embedded_symbology_id">Die Symbologiekennung \"%1$s\" ist mit im Symbol codiert. Sie wird vom Lesegeraet vorangestellt und geh\u00f6rt nicht in die Daten \u2013 zum Auswerten wurde sie entfernt.</string>
     <string name="image_not_loaded">Bild konnte nicht geladen werden \u2013 m\u00f6glicherweise zu gro\u00df f\u00fcr den verf\u00fcgbaren Speicher.</string>
+    <string name="image_processing">Bild wird verarbeitet…</string>
+    <string name="image_processing_hint">Große Bilder können etwas dauern. Die Kamera pausiert, bis die Auswertung fertig ist.</string>
 </resources>

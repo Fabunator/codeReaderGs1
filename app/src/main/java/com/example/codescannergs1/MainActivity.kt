@@ -27,6 +27,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,6 +55,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.CardDefaults
@@ -268,6 +270,9 @@ fun CameraScreen(
     
     var camera by remember { mutableStateOf<Camera?>(null) }
     var isFlashOn by remember { mutableStateOf(false) }
+    // Solange ein Galeriebild ausgewertet wird, ruht die Kamera-Analyse und ein Hinweis
+    // liegt ueber der Vorschau. Der Analyse-Thread liest den Wert mit.
+    var isImporting by remember { mutableStateOf(false) }
     var zoomValue by remember { mutableFloatStateOf(0f) }
 
     val options = remember {
@@ -291,12 +296,14 @@ fun CameraScreen(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri: Uri? ->
             if (uri != null) {
+                isImporting = true
                 // Das Bild wird genau einmal geladen und beiden Decodern gereicht.
                 // Zweimal zu laden hat den Spitzenbedarf bei einer 9-Megapixel-Aufnahme
                 // auf ueber 80 MB getrieben - auf schwaecheren Geraeten reicht das fuer
                 // einen OutOfMemoryError, und die Meldung lautete dann faelschlich
                 // "keine Barcodes gefunden".
                 scope.launch {
+                  try {
                     val loaded = withContext(Dispatchers.IO) { loadImage(context, uri) }
                     if (loaded == null) {
                         Toast.makeText(
@@ -333,6 +340,9 @@ fun CameraScreen(
                             Toast.LENGTH_SHORT
                         ).show()
                     }
+                  } finally {
+                    isImporting = false
+                  }
                 }
             }
         }
@@ -380,6 +390,10 @@ fun CameraScreen(
                 var lastDetectionTime = System.currentTimeMillis()
 
                 imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                    if (isImporting) {
+                        imageProxy.close()
+                        return@setAnalyzer
+                    }
                     val image = imageProxy.image
                     if (image == null) {
                         imageProxy.close()
@@ -458,6 +472,33 @@ fun CameraScreen(
             },
             modifier = Modifier.fillMaxSize()
         )
+
+        if (isImporting) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.85f))
+                    // Beruehrungen schlucken, damit waehrenddessen nichts ausgeloest wird
+                    .clickable(enabled = true, onClick = {}),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = Color.White)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        stringResource(R.string.image_processing),
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        stringResource(R.string.image_processing_hint),
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 32.dp, vertical = 4.dp)
+                    )
+                }
+            }
+        }
 
         IconButton(
             onClick = {
