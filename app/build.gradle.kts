@@ -66,3 +66,5 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
+
+apply(from = "gs1-ai.gradle.kts") // GS1-AI-Tabelle: gradlew updateGs1Ai

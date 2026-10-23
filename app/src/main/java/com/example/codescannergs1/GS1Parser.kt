@@ -1,87 +1,46 @@
 package com.example.codescannergs1
 
 import android.util.Log
+import java.text.DecimalFormatSymbols
 import java.text.SimpleDateFormat
 import java.util.Locale
 
 object GS1Parser {
 
-    internal val aiDefinitions = mapOf(
-        // Fixed length AIs
-        "00" to AI(18, 18, 18, AIType.NUMERIC, "SSCC"),
-        "01" to AI(14, 14, 14, AIType.NUMERIC, "GTIN"),
-        "02" to AI(14, 14, 14, AIType.NUMERIC,"CONTENT"),
-        "03" to AI(14, 14, 14, AIType.NUMERIC,"MTO"),
-        "11" to AI(6, 6, 6, AIType.DATE, "PROD DATE"),
-        "12" to AI(6, 6, 6, AIType.DATE, "DUE DATE"),
-        "13" to AI(6, 6, 6, AIType.DATE, "PACK DATE"),
-        "15" to AI(6, 6, 6, AIType.DATE, "BEST BEFORE"),
-        "16" to AI(6, 6, 6, AIType.DATE, "SELL BY"),
-        "17" to AI(6, 6, 6, AIType.DATE, "EXPIRY"),
-        "20" to AI(2, 2, 2, AIType.NUMERIC, "VARIANT"),
-        "402" to AI(1, 17, 17, AIType.NUMERIC, "GSIN"),
-        "410" to AI(1, 13, 13, AIType.NUMERIC, "SHIP TO LOC"),
-        "411" to AI(1, 13, 13, AIType.NUMERIC, "BILL TO"),
-        "412" to AI(1, 13, 13, AIType.NUMERIC, "PURCHASE FROM"),
-        "413" to AI(1, 13, 13, AIType.NUMERIC, "SHIP FOR LOC"),
-        "414" to AI(1, 13, 13, AIType.NUMERIC, "LOC No."),
-        "415" to AI(1, 13, 13, AIType.NUMERIC, "PAY TO"),
-        "416" to AI(1, 13, 13, AIType.NUMERIC, "PROD/SERV LOC"),
-        "417" to AI(1, 13, 13, AIType.NUMERIC, "PARTY"),
-        "422" to AI(1, 3, 3, AIType.NUMERIC, "ORIGIN"),
-        "424" to AI(1, 3, 3, AIType.NUMERIC, "COUNTRY - PROCESS"),
-        "426" to AI(1, 3, 3, AIType.NUMERIC, "COUNTRY - FULL PROCESS"),
+    /**
+     * Alle GS1 Application Identifier, erzeugt aus [GS1_SYNTAX_DICTIONARY].
+     *
+     * AI-Bereiche wie `3100-3105` werden zu Einzeleintraegen aufgeloest, damit die
+     * Suche ein einfacher Map-Zugriff bleibt. Die Menge ist praefixfrei (keine AI ist
+     * Anfang einer anderen), deshalb passt beim Probieren von 4 bis 2 Stellen immer
+     * hoechstens eine Laenge.
+     */
+    internal val aiDefinitions: Map<String, AI> by lazy {
+        parseDictionary(GS1_SYNTAX_DICTIONARY, parseDescriptions(GS1_AI_DESCRIPTIONS))
+    }
 
-        // Variable length AIs
-        "10" to AI(-1, 1, 20, AIType.ALPHANUMERIC, "LOT"),
-        "21" to AI(-1, 1, 20, AIType.ALPHANUMERIC, "SERIAL"),
-        "22" to AI(-1, 1, 20, AIType.ALPHANUMERIC, "CPV"),
-        "235" to AI(-1, 1, 28, AIType.ALPHANUMERIC, "TPX"),
-        "240" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "ADDITIONAL ID"),
-        "241" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "CUST. PART No."),
-        "242" to AI(-1, 1, 6, AIType.ALPHANUMERIC, "MTO VARIANT"),
-        "243" to AI(-1, 1, 20, AIType.ALPHANUMERIC, "PCN"),
-        "250" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "SECONDARY SERIAL"),
-        "251" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "REF. TO SOURCE"),
-        "253" to AI(-1, 13, 30, AIType.ALPHANUMERIC, "ADDITIONAL SERIAL"),
-        "254" to AI(-1, 1, 20, AIType.ALPHANUMERIC, "GLN EXTENSION COMPONENT"),
-        "255" to AI(-1, 13, 25, AIType.ALPHANUMERIC, "GCN"),
-        "30" to AI(-1, 1, 8, AIType.ALPHANUMERIC, "VAR. COUNT"),
-        "37" to AI(-1, 1, 8, AIType.NUMERIC, "COUNT"),
-        "400" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "ORDER NUMBER"),
-        "401" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "GINC"),
-        "403" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "ROUTE"),
-        "420" to AI(-1, 1, 20, AIType.ALPHANUMERIC, "SHIP TO POST"),
-        "421" to AI(-1, 3, 12, AIType.ALPHANUMERIC, "SHIP TO POST"),
-        "423" to AI(-1, 3, 15, AIType.NUMERIC, "COUNTRY - INITIAL PROCESS"),
-        "425" to AI(-1, 3, 15, AIType.NUMERIC, "COUNTRY - DISASSEMBLY"),
-        "427" to AI(-1, 1, 3, AIType.ALPHANUMERIC, "ORIGIN SUBDIVISION"),
-        "710" to AI(-1, 1, 20, AIType.ALPHANUMERIC,"NHRN PZN"),
-        "711" to AI(-1, 1, 20, AIType.ALPHANUMERIC,"NHRN CIP"),
-        "712" to AI(-1, 1, 20, AIType.ALPHANUMERIC,"NHRN CN"),
-        "713" to AI(-1, 1, 20, AIType.ALPHANUMERIC,"NHRN DRN"),
-        "714" to AI(-1, 1, 20, AIType.ALPHANUMERIC,"NHRN AIM"),
-        "715" to AI(-1, 1, 20, AIType.ALPHANUMERIC,"NHRN NDC"),
-        "716" to AI(-1, 1, 20, AIType.ALPHANUMERIC,"NHRN AIC"),
-        "717" to AI(-1, 1, 20, AIType.ALPHANUMERIC,"NHRN SRN"),
-        "90" to AI(-1, 1, 30, AIType.ALPHANUMERIC, "INTERNAL"),
-        "91" to AI(-1, 1, 90, AIType.ALPHANUMERIC, "INTERNAL"),
-        "92" to AI(-1, 1, 90, AIType.ALPHANUMERIC, "INTERNAL"),
-        "93" to AI(-1, 1, 90, AIType.ALPHANUMERIC, "INTERNAL"),
-        "94" to AI(-1, 1, 90, AIType.ALPHANUMERIC, "INTERNAL"),
-        "95" to AI(-1, 1, 90, AIType.ALPHANUMERIC, "INTERNAL"),
-        "96" to AI(-1, 1, 90, AIType.ALPHANUMERIC, "INTERNAL"),
-        "97" to AI(-1, 1, 90, AIType.ALPHANUMERIC, "INTERNAL"),
-        "98" to AI(-1, 1, 90, AIType.ALPHANUMERIC, "INTERNAL"),
-        "99" to AI(-1, 1, 90, AIType.ALPHANUMERIC, "INTERNAL")
+    /** Laengen, die eine AI haben kann – von lang nach kurz probiert. */
+    private val AI_LENGTHS = 4 downTo 2
+
+    /** Titel, die im Dictionary fehlen. */
+    private val FALLBACK_TITLES = mapOf(
+        "8110" to "COUPON CODE (NORTH AMERICA)",
+        "8112" to "PAPERLESS COUPON (NORTH AMERICA)"
     )
 
     // FNC1 separator character
     internal const val FNC1 = '\u001d'
 
-    fun parse(data: String, formatDatesForDisplay: Boolean = true): Map<String, String> {
+    /**
+     * Zerlegt einen Elementstring in AI → Wert.
+     *
+     * @param formatForDisplay true: Datumswerte als Datum, AIs mit implizitem
+     *        Dezimalkomma (310n–369n, 390n–395n) als Dezimalzahl, z. B. (3103)001250
+     *        → "1,250". false: Rohwerte wie im Symbol.
+     */
+    fun parse(data: String, formatForDisplay: Boolean = true): Map<String, String> {
         val parsedData = mutableMapOf<String, String>()
-        
+
         var remainingData = stripSymbologyPrefix(data)
 
         while (remainingData.isNotEmpty()) {
@@ -91,32 +50,28 @@ object GS1Parser {
                 remainingData = remainingData.substring(1)
                 continue
             }
-            var foundAi = false
-            for (aiLength in 3 downTo 2) {
-                if (remainingData.length >= aiLength) {
-                    val potentialAi = remainingData.substring(0, aiLength)
-                    if (aiDefinitions.containsKey(potentialAi)) {
-                        val ai = aiDefinitions[potentialAi]!!
-                        val dataField = remainingData.substring(aiLength)
-                        val result = extractData(dataField, ai)
-
-                        parsedData[potentialAi] = if (ai.type == AIType.DATE && formatDatesForDisplay) formatDateForDisplay(result.value) else result.value
-                        remainingData = result.remainingData
-                        foundAi = true
-                        break
-                    }
-                }
-            }
-
-            if (!foundAi) {
+            val match = matchAi(remainingData)
+            if (match == null) {
                 Log.w("GS1Parser", "No matching AI found for remaining data: $remainingData")
-                if (remainingData.isNotEmpty()) {
-                    parsedData["unknown"] = remainingData
-                }
+                parsedData["unknown"] = remainingData
                 break
             }
+            val (code, ai) = match
+            val result = extractData(remainingData.substring(code.length), ai)
+            parsedData[code] = if (formatForDisplay) formatValue(ai, result.value) else result.value
+            remainingData = result.remainingData
         }
         return parsedData
+    }
+
+    /** Findet die AI am Anfang von [data]. */
+    private fun matchAi(data: String): Pair<String, AI>? {
+        for (aiLength in AI_LENGTHS) {
+            if (data.length < aiLength) continue
+            val code = data.substring(0, aiLength)
+            aiDefinitions[code]?.let { return code to it }
+        }
+        return null
     }
 
     /**
@@ -156,9 +111,6 @@ object GS1Parser {
      * Dient als zweites, inhaltliches Signal neben der AIM-Symbologiekennung: ohne
      * Kennung kann ein Code hoechstens "wahrscheinlich GS1" sein, und bei vorhandener
      * Kennung zeigt [Validation.unparsedRest], ab wo die Daten nicht mehr aufgehen.
-     *
-     * Achtung: [aiDefinitions] kennt nur zwei- und dreistellige AIs. Vierstellige wie
-     * (3103) oder (7003) liefern deshalb einen Rest, obwohl der Code gueltig ist.
      */
     fun validate(data: String): Validation {
         var remainingData = stripSymbologyPrefix(data)
@@ -170,23 +122,16 @@ object GS1Parser {
                 remainingData = remainingData.substring(1)
                 continue
             }
-            var foundAi = false
-            for (aiLength in 3 downTo 2) {
-                if (remainingData.length < aiLength) continue
-                val potentialAi = remainingData.substring(0, aiLength)
-                val ai = aiDefinitions[potentialAi] ?: continue
-                val result = extractData(remainingData.substring(aiLength), ai)
-                // Wert leer oder bei fester Laenge abgeschnitten -> Kette geht nicht auf
-                if (result.value.isEmpty() || (ai.length > 0 && result.value.length != ai.length)) {
-                    return Validation(false, aiCount, remainingData, plausible)
-                }
-                if (!checkPlausibility(potentialAi, result.value).first) plausible = false
-                remainingData = result.remainingData
-                aiCount++
-                foundAi = true
-                break
+            val (code, ai) = matchAi(remainingData)
+                ?: return Validation(false, aiCount, remainingData, plausible)
+            val result = extractData(remainingData.substring(code.length), ai)
+            // Wert leer oder bei fester Laenge abgeschnitten -> Kette geht nicht auf
+            if (result.value.isEmpty() || (ai.length > 0 && result.value.length != ai.length)) {
+                return Validation(false, aiCount, remainingData, plausible)
             }
-            if (!foundAi) return Validation(false, aiCount, remainingData, plausible)
+            if (!checkPlausibility(code, result.value).first) plausible = false
+            remainingData = result.remainingData
+            aiCount++
         }
         return Validation(true, aiCount, null, plausible)
     }
@@ -211,77 +156,311 @@ object GS1Parser {
             }
         }
     }
+
+    // ------------------------------------------------------------------
+    // Anzeige
+    // ------------------------------------------------------------------
+
+    private fun formatValue(ai: AI, raw: String): String = when {
+        ai.type == AIType.DATE -> formatDateForDisplay(raw)
+        ai.decimals != null -> formatDecimalAiValue(ai, raw, Locale.getDefault())
+        else -> raw
+    }
+
+    /**
+     * Wert einer AI mit implizitem Dezimalkomma. Die Nachkommastellen stehen in der
+     * letzten Ziffer der AI ([AI.decimals]) und gelten fuer die letzte Komponente –
+     * bei (391n)/(393n) steht davor der dreistellige ISO-4217-Waehrungscode.
+     */
+    internal fun formatDecimalAiValue(ai: AI, raw: String, locale: Locale): String {
+        val decimals = ai.decimals ?: return raw
+        val prefixLength = ai.components.dropLast(1).sumOf { it.maxLength }
+        if (raw.length <= prefixLength || !raw.all { it.isDigit() }) return raw
+        val amount = insertDecimalPoint(raw.substring(prefixLength), decimals, locale)
+        return if (prefixLength > 0) "$amount (${raw.substring(0, prefixLength)})" else amount
+    }
+
+    /** "001250", 3 → "1,250" (deutsch) bzw. "1.250" (englisch). */
+    internal fun insertDecimalPoint(digits: String, decimals: Int, locale: Locale): String {
+        if (decimals <= 0) return digits.trimStart('0').ifEmpty { "0" }
+        val padded = digits.padStart(decimals + 1, '0')
+        val intPart = padded.dropLast(decimals).trimStart('0').ifEmpty { "0" }
+        val separator = DecimalFormatSymbols.getInstance(locale).decimalSeparator
+        return intPart + separator + padded.takeLast(decimals)
+    }
+
     private fun formatDateForDisplay(rawDate: String): String {
         if (rawDate.length != 6 || !rawDate.all { it.isDigit() }) return rawDate
         return try {
-            val parser = SimpleDateFormat("yyMMdd", Locale.US).apply { isLenient = false }
-            val parsed = parser.parse(rawDate) ?: return rawDate
-            val formatter = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+            // Tag "00" heisst laut GS1 "ohne Tagesangabe" – dann nur Monat und Jahr
+            val withoutDay = rawDate.endsWith("00")
+            val parser = SimpleDateFormat(if (withoutDay) "yyMM" else "yyMMdd", Locale.US).apply { isLenient = false }
+            val parsed = parser.parse(if (withoutDay) rawDate.take(4) else rawDate) ?: return rawDate
+            val formatter = SimpleDateFormat(if (withoutDay) "MMM yyyy" else "dd MMM yyyy", Locale.getDefault())
             formatter.format(parsed)
         } catch (_: Exception) {
             rawDate
         }
     }
+
+    // ------------------------------------------------------------------
+    // Plausibilitaet
+    // ------------------------------------------------------------------
+
+    /**
+     * Prueft einen AI-Wert gegen die Spezifikation aus dem Syntax Dictionary:
+     * Laenge, Zeichensatz je Komponente und die Linter, die hier umgesetzt sind
+     * (siehe [checkLinter]). Nicht umgesetzte Linter – etwa Laendercodes oder IBAN –
+     * werden uebergangen.
+     *
+     * Die Meldungstexte wertet `buildPlausibilityHint` in MainActivity aus; beim
+     * Aendern dort mitziehen.
+     */
     fun checkPlausibility(ai: String, value: String): Pair<Boolean, String> {
         val definition = aiDefinitions[ai] ?: return Pair(false, "Unbekannter AI")
 
-        if (value.length > definition.maxLength || value.length < definition.minLength)
-        {
+        if (value.length > definition.maxLength || value.length < definition.minLength) {
             return Pair(false, "AI hat falsche Länge (max. ${definition.maxLength})")
         }
+        if (value.isEmpty()) return Pair(false, "Wert ist leer")
 
-        when (definition.type) {
-            AIType.NUMERIC -> if (!value.all { it.isDigit() }) return Pair(false, "Nur Zahlen erlaubt")
-            AIType.ALPHANUMERIC -> if (value.isEmpty()) return Pair(false, "Wert ist leer")
-            AIType.DATE -> {
-                if (value.length != 6 || !value.all { it.isDigit() }) return Pair(false, "Datum muss JJMMTT sein")
-                try {
-                    val sdf = SimpleDateFormat("yyMMdd", Locale.US)
-                    sdf.isLenient = false
-                    sdf.parse(value)
-                } catch (e: Exception) {
-                    return Pair(false, "Ungültiges Datum")
-                }
+        var pos = 0
+        for (component in definition.components) {
+            if (pos >= value.length) {
+                if (component.optional) break
+                return Pair(false, "AI hat falsche Länge (max. ${definition.maxLength})")
+            }
+            val end = minOf(value.length, pos + component.maxLength)
+            if (end - pos < component.minLength) {
+                return Pair(false, "AI hat falsche Länge (max. ${definition.maxLength})")
+            }
+            val part = value.substring(pos, end)
+            pos = end
+
+            checkCharset(component.charset, part)?.let { return Pair(false, it) }
+            for (linter in component.linters) {
+                checkLinter(linter, part)?.let { return Pair(false, it) }
             }
         }
-
-        // Prüfziffern-Checks
-        if (ai == "01" || ai == "02") {
-            if (!isValidGtin(value)) return Pair(false, "GTIN Prüfziffer falsch")
-        } else if (ai == "00") {
-            if (!isValidSscc(value)) return Pair(false, "SSCC Prüfziffer falsch")
-        }
+        if (pos < value.length) return Pair(false, "AI hat falsche Länge (max. ${definition.maxLength})")
 
         return Pair(true, "OK")
     }
 
-    private fun isValidGtin(gtin: String): Boolean {
-        if (gtin.length != 14) return false
-        return checkLuhn(gtin)
+    private const val CSET82 = "!\"%&'()*+,-./0123456789:;<=>?ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz"
+    private const val CSET39 = "#-/0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    private const val CSET32 = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    private const val BASE64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_="
+
+    private fun checkCharset(charset: Char, part: String): String? {
+        val allowed = when (charset) {
+            'N' -> return if (part.all { it in '0'..'9' }) null else "Nur Zahlen erlaubt"
+            'X' -> CSET82
+            'Y' -> CSET39
+            'Z' -> BASE64URL
+            else -> return null
+        }
+        val bad = part.firstOrNull { it !in allowed } ?: return null
+        return "Unzulässiges Zeichen '$bad'"
     }
 
-    private fun isValidSscc(sscc: String): Boolean {
-        if (sscc.length != 18) return false
-        return checkLuhn(sscc)
+    /** Die umgesetzten Linter des Syntax Dictionary; null = bestanden oder nicht umgesetzt. */
+    private fun checkLinter(linter: String, part: String): String? = when (linter) {
+        "csum" -> if (checkMod10(part)) null else "Prüfziffer falsch"
+        "csumalpha" -> if (checkAlphaCheckPair(part)) null else "Prüfzeichenpaar falsch"
+        "yymmdd" -> if (isValidDate(part, allowDayZero = false)) null else "Ungültiges Datum"
+        "yymmd0" -> if (isValidDate(part, allowDayZero = true)) null else "Ungültiges Datum"
+        "yyyymmdd" -> if (isValidDate(part.drop(2), allowDayZero = false)) null else "Ungültiges Datum"
+        "hhmi" -> if (part.length == 4 && part.take(2).toInt() < 24 && part.drop(2).toInt() < 60) null else "Ungültige Uhrzeit"
+        "hh" -> if (part.toInt() < 24) null else "Ungültige Uhrzeit"
+        "mi", "ss" -> if (part.toInt() < 60) null else "Ungültige Uhrzeit"
+        "yesno" -> if (part == "0" || part == "1") null else "Nur 0 oder 1 erlaubt"
+        "zero" -> if (part.all { it == '0' }) null else "Muss 0 sein"
+        "nonzero" -> if (part.any { it != '0' }) null else "Darf nicht 0 sein"
+        "nozeroprefix" -> if (part == "0" || !part.startsWith("0")) null else "Führende Null nicht erlaubt"
+        "hasnondigit" -> if (part.any { !it.isDigit() }) null else "Muss ein Nicht-Ziffern-Zeichen enthalten"
+        "hyphen" -> if (part == "-") null else "Nur '-' erlaubt"
+        "winding" -> if (part in setOf("0", "1", "9")) null else "Wickelrichtung muss 0, 1 oder 9 sein"
+        "pieceoftotal" -> {
+            val piece = part.take(2).toInt()
+            val total = part.drop(2).toInt()
+            if (piece in 1..total) null else "Teil/Gesamt ungültig"
+        }
+        else -> null
     }
 
-    private fun checkLuhn(code: String): Boolean {
-        val digits = code.map { it.toString().toInt() }
-        val checkDigit = digits.last()
+    private fun isValidDate(yymmdd: String, allowDayZero: Boolean): Boolean {
+        if (yymmdd.length != 6 || !yymmdd.all { it.isDigit() }) return false
+        val year = 2000 + yymmdd.substring(0, 2).toInt()
+        val month = yymmdd.substring(2, 4).toInt()
+        val day = yymmdd.substring(4, 6).toInt()
+        if (month !in 1..12) return false
+        if (day == 0) return allowDayZero
+        val leap = year % 4 == 0
+        val days = intArrayOf(31, if (leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+        return day <= days[month - 1]
+    }
+
+    /** GS1-Pruefziffer (Modulo 10, Gewichte 3/1 von rechts) – GTIN, SSCC, GLN, GSRN … */
+    private fun checkMod10(code: String): Boolean {
+        if (code.length < 2 || !code.all { it.isDigit() }) return false
+        val digits = code.map { it - '0' }
         val payload = digits.dropLast(1).reversed()
-        
         var sum = 0
         for ((i, digit) in payload.withIndex()) {
             sum += if (i % 2 == 0) digit * 3 else digit
         }
-        
-        val calculated = (10 - (sum % 10)) % 10
-        return checkDigit == calculated
+        return digits.last() == (10 - (sum % 10)) % 10
+    }
+
+    /**
+     * GS1-Pruefzeichenpaar fuer alphanumerische Schluessel (GMN, CPID …):
+     * Zeichenwerte nach CSET 82, gewichtet mit Primzahlen von rechts (2, 3, 5 …),
+     * Summe mod 1021, als zwei Zeichen aus CSET 32.
+     */
+    private val PRIMES = intArrayOf(2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83)
+
+    private fun checkAlphaCheckPair(value: String): Boolean {
+        val n = value.length - 2
+        if (n < 1 || n > PRIMES.size) return false
+        var sum = 0
+        for (i in 0 until n) {
+            val v = CSET82.indexOf(value[i])
+            if (v < 0) return false
+            sum += v * PRIMES[n - 1 - i]
+        }
+        sum %= 1021
+        return value[n] == CSET32[sum shr 5] && value[n + 1] == CSET32[sum and 31]
+    }
+
+    // ------------------------------------------------------------------
+    // Dictionary einlesen
+    // ------------------------------------------------------------------
+
+    private val COMPONENT = Regex("""^(\[)?([NXYZ])(\.\.)?(\d+)(])?((?:,\w+)*)$""")
+
+    /**
+     * Liest die langen Beschreibungen (Zeilen "AI<TAB>Text" oder "AI-AI<TAB>Text")
+     * und loest Bereiche zu Einzeleintraegen auf.
+     */
+    internal fun parseDescriptions(text: String): Map<String, String> {
+        val result = HashMap<String, String>()
+        for (rawLine in text.lineSequence()) {
+            val tab = rawLine.indexOf('\t')
+            if (tab < 0) continue
+            val description = rawLine.substring(tab + 1).trim()
+            if (description.isEmpty()) continue
+            val range = rawLine.substring(0, tab).trim().split('-')
+            val first = range[0]
+            val last = range.getOrElse(1) { first }
+            for (n in first.toInt()..last.toInt()) {
+                result[n.toString().padStart(first.length, '0')] = description
+            }
+        }
+        return result
+    }
+
+    /** Liest das GS1 Barcode Syntax Dictionary, siehe Kopf von Gs1AiDictionary.kt. */
+    internal fun parseDictionary(text: String, descriptions: Map<String, String> = emptyMap()): Map<String, AI> {
+        val result = LinkedHashMap<String, AI>()
+        for (rawLine in text.lineSequence()) {
+            val line = rawLine.trim()
+            if (line.isEmpty() || line.startsWith("#")) continue
+
+            // Der Titel folgt dem ersten "#" – er kann selbst "#" enthalten ("CERT # 1")
+            val hash = line.indexOf('#')
+            val title = if (hash >= 0) line.substring(hash + 1).trim().ifEmpty { null } else null
+            val tokens = (if (hash >= 0) line.substring(0, hash) else line).trim().split(Regex("\\s+"))
+
+            val flags = tokens.getOrNull(1)?.takeIf { t -> t.none { it.isLetterOrDigit() || it == '[' } } ?: ""
+            val components = tokens.drop(1).mapNotNull { token ->
+                val m = COMPONENT.matchEntire(token) ?: return@mapNotNull null
+                val (open, charset, variable, len, _, linters) = m.destructured
+                val max = len.toInt()
+                AiComponent(
+                    charset = charset[0],
+                    minLength = if (variable.isEmpty()) max else 1,
+                    maxLength = max,
+                    optional = open.isNotEmpty(),
+                    linters = linters.split(',').filter { it.isNotEmpty() }
+                )
+            }
+            require(components.isNotEmpty()) { "Keine Spezifikation in: $line" }
+
+            val range = tokens[0].split('-')
+            val first = range[0]
+            val last = range.getOrElse(1) { first }
+            for (n in first.toInt()..last.toInt()) {
+                val code = n.toString().padStart(first.length, '0')
+                result[code] = buildAi(code, flags, components, title ?: FALLBACK_TITLES[code])
+                    .copy(description = descriptions[code])
+            }
+        }
+        return result
+    }
+
+    private fun buildAi(code: String, flags: String, components: List<AiComponent>, title: String?): AI {
+        val fixed = components.none { it.optional || it.minLength != it.maxLength }
+        val min = components.filter { !it.optional }.sumOf { it.minLength }
+        val max = components.sumOf { it.maxLength }
+        val type = when {
+            components.size == 1 && components[0].maxLength == 6 &&
+                components[0].linters.any { it == "yymmdd" || it == "yymmd0" } -> AIType.DATE
+            components.all { it.charset == 'N' } -> AIType.NUMERIC
+            else -> AIType.ALPHANUMERIC
+        }
+        return AI(
+            length = if (fixed) max else -1,
+            minLength = min,
+            maxLength = max,
+            type = type,
+            name = title,
+            components = components,
+            fnc1Required = '*' !in flags,
+            decimals = impliedDecimals(code)
+        )
+    }
+
+    /**
+     * Anzahl Nachkommastellen fuer AIs mit implizitem Dezimalkomma: bei 310n–369n
+     * (Masse und Gewichte) und 390n–395n (Betraege, Preise, Rabatt) gibt die vierte
+     * Ziffer an, wie viele der Stellen hinter dem Komma stehen.
+     */
+    private fun impliedDecimals(code: String): Int? {
+        if (code.length != 4) return null
+        val prefix2 = code.take(2).toInt()
+        val prefix3 = code.take(3).toInt()
+        return if (prefix2 in 31..36 || prefix3 in 390..395) code[3] - '0' else null
     }
 }
 
-internal data class AI(val length: Int, val minLength: Int, val maxLength: Int, val type: AIType, val name: String? = "NONE")
+/** Eine Komponente des Datenfelds, z. B. "N6,yymmdd" oder "[X..17]". */
+internal data class AiComponent(
+    val charset: Char,
+    val minLength: Int,
+    val maxLength: Int,
+    val optional: Boolean,
+    val linters: List<String>
+)
+
+/**
+ * @param length feste Laenge des Datenfelds, oder -1 bei variabler Laenge
+ * @param fnc1Required true, wenn nach dem Feld ein FNC1 folgen muss (sofern es nicht
+ *        am Ende steht) – das gilt auch fuer manche AIs fester Laenge, etwa (7003)
+ * @param decimals implizite Nachkommastellen, siehe GS1Parser.impliedDecimals
+ * @param description ausfuehrliche Bezeichnung von GS1, z. B. "Net weight, kilograms
+ *        (variable measure trade item)" – [name] ist nur das Kurzzeichen ("NET WEIGHT (kg)")
+ */
+internal data class AI(
+    val length: Int,
+    val minLength: Int,
+    val maxLength: Int,
+    val type: AIType,
+    val name: String? = "NONE",
+    val components: List<AiComponent> = emptyList(),
+    val fnc1Required: Boolean = length < 0,
+    val decimals: Int? = null,
+    val description: String? = null
+)
 internal enum class AIType { NUMERIC, ALPHANUMERIC, DATE }
 private data class ExtractionResult(val value: String, val remainingData: String)
-
-

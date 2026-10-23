@@ -122,10 +122,18 @@ class Gs1DetectionTest {
 
     @Test
     fun confirmedButUnparsableContentReportsRest() {
-        // (3103) ist vierstellig und steht nicht in der AI-Tabelle der App
+        // (3106) ist nicht vergeben
+        val result = Gs1Detector.classify("]C1", true, "01040123456789013106001234")
+        assertEquals(Gs1Level.CONFIRMED, result.level)
+        assertEquals("3106001234", result.unparsedRest)
+    }
+
+    @Test
+    fun fourDigitAiIsNoLongerReportedAsRest() {
+        // Bis zur vollstaendigen AI-Tabelle wurde (3103) hier als nicht auswertbar gemeldet
         val result = Gs1Detector.classify("]C1", true, "01040123456789013103001234")
         assertEquals(Gs1Level.CONFIRMED, result.level)
-        assertEquals("3103001234", result.unparsedRest)
+        assertNull(result.unparsedRest)
     }
 
     // ------------------------------------------------------------------
@@ -172,7 +180,7 @@ class Gs1DetectionTest {
         assertTrue("doppelte Kennung muss entfernt werden", v.complete)
         assertEquals(3, v.aiCount)
 
-        val parsed = GS1Parser.parse(doubled, formatDatesForDisplay = false)
+        val parsed = GS1Parser.parse(doubled, formatForDisplay = false)
         assertEquals("08433042021573", parsed["01"])
         assertEquals("260228", parsed["17"])
         assertEquals("V999", parsed["10"])
