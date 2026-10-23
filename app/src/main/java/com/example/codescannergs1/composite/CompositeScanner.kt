@@ -128,11 +128,32 @@ object CompositeScanner {
     private const val TILE_SIZE = 700
     private const val TILE_STEP = 500
 
+    /** Obergrenze paralleler Arbeiter beim Kachellesen (Speicher, Waerme). */
+    private const val MAX_WORKERS = 4
+
+    /** Kacheln mit geringerer Helligkeitsspanne gelten als leer. */
+    private const val TILE_MIN_CONTRAST = 16
+
+    /** Ab dieser Pixelzahl gilt eine Aufnahme als Industriebild (Handyfotos: bis ~12 MP). */
+    private const val HUGE_PIXELS = 13_000_000L
+
     /** Erst ab dieser langen Seite wird zusaetzlich in Kacheln gelesen. */
     private const val TILE_MIN_LONG_SIDE = 2000
 
-    /** Verwendete Profile je Kachel: Standard und Punktdruck mit Histogramm. */
-    private val TILE_PROFILES = listOf(0, 3)
+    /** Ein Leseschritt je Kachel: Vergroesserung und die dabei verwendeten Profile. */
+    private class TilePass(val scale: Float, val profiles: List<Int>)
+
+    /**
+     * Gemessen an den beiden Bildern mit 70 Codes (je Kachel einzeln probiert): bei 2x
+     * und 2,5x liest das Standardprofil 69 bzw. 70 Codes, einzelne Codes liefern aber nur
+     * eine einzige Kombination. 1x mit Histogramm fuegt genau solche hinzu. Das Histogramm
+     * bei den Vergroesserungen bringt dagegen nichts und kostet Zeit.
+     */
+    private val TILE_PASSES = listOf(
+        TilePass(1f, listOf(0, 3)),
+        TilePass(2f, listOf(0)),
+        TilePass(2.5f, listOf(0))
+    )
 
     private val readers: List<BarcodeReader> by lazy { readerOptions().map { BarcodeReader(it) } }
 
@@ -188,15 +209,20 @@ object CompositeScanner {
      */
     fun scan(bitmap: Bitmap, rotationDegrees: Int = 0): List<ScannedCode> {
         val found = LinkedHashMap<String, ScannedCode>()
-        collectInto(bitmap, rotationDegrees, found)
+        val longSide = maxOf(bitmap.width, bitmap.height)
+        val huge = bitmap.width.toLong() * bitmap.height > HUGE_PIXELS
 
-// Grosse Aufnahmen zusaetzlich halbiert lesen. Die Stufenleiter von zxing-cpp
+        // Industrieaufnahmen mit vielen Codes: das Gesamtbild nur mit dem schnellen
+        // Standardprofil lesen. Die uebrigen Profile und die halbierte Kopie kosten bei
+        // 18 Megapixeln Sekunden; was dort lesbar ist, finden die Kacheln ebenfalls.
+        collectInto(bitmap, rotationDegrees, found, if (huge) listOf(0) else readers.indices.toList())
+
+        // Grosse Aufnahmen zusaetzlich halbiert lesen. Die Stufenleiter von zxing-cpp
         // geht in Dritteln (1/1, 1/3, 1/9) und laesst die Haelfte aus; ausserdem
         // verkleinert sie durch Punktabtastung, waehrend Bitmap.createScaledBitmap
         // mittelt. Beides sind andere Bilder - gemessen an einer Bildschirmaufnahme,
         // deren Symbole sich erst bei halber Groesse sauber aufloesten.
-        val longSide = maxOf(bitmap.width, bitmap.height)
-        if (longSide > 1600) {
+        if (longSide > 1600 && !huge) {
             // Nur eine Zusatzchance, kein Muss: schlaegt sie fehl (auch wegen Speicher),
             // bleibt es bei den Ergebnissen aus der vollen Aufloesung.
             val half = try {
@@ -240,37 +266,65 @@ object CompositeScanner {
     ) {
         val width = bitmap.width
         val height = bitmap.height
-        val xs = tileStarts(width)
-        val ys = tileStarts(height)
-        val pixels = IntArray(TILE_SIZE * TILE_SIZE)
-        for (y in ys) {
-            for (x in xs) {
-                val w = minOf(TILE_SIZE, width - x)
-                val h = minOf(TILE_SIZE, height - y)
-                val tile = try {
-                    stretchedTile(bitmap, x, y, w, h, pixels)
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Kachel konnte nicht erzeugt werden", e)
-                    return
-                }
-                try {
-                    readTile(tile, rotationDegrees, into)
-                    val big = try {
-                        Bitmap.createScaledBitmap(tile, w * 2, h * 2, true)
-                    } catch (e: Throwable) {
-                        null
-                    }
-                    if (big != null) {
+        val queue = java.util.concurrent.ConcurrentLinkedQueue<IntArray>()
+        for (y in tileStarts(height)) for (x in tileStarts(width)) queue.add(intArrayOf(x, y))
+
+        // Kacheln sind voneinander unabhaengig und die native Suche ist rechenbound:
+        // mehrere Kerne bringen fast den vollen Faktor. Jeder Arbeiter legt eigene
+        // Leser an, damit keine native Instanz von zwei Threads gleichzeitig benutzt wird.
+        val workers = Runtime.getRuntime().availableProcessors().coerceIn(1, MAX_WORKERS)
+        val lock = Any()
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(workers)
+        try {
+            val options = readerOptions()
+            val futures = (0 until workers).map {
+                pool.submit {
+                    val tileReaders = TILE_PASSES.flatMap { it.profiles }.distinct()
+                        .associateWith { BarcodeReader(options[it]) }
+                    val pixels = IntArray(TILE_SIZE * TILE_SIZE)
+                    while (true) {
+                        val (x, y) = queue.poll() ?: break
+                        val w = minOf(TILE_SIZE, width - x)
+                        val h = minOf(TILE_SIZE, height - y)
+                        val tile = try {
+                            // Bitmap.getPixels ist nicht fuer gleichzeitigen Zugriff
+                            // dokumentiert, deshalb gesperrt; das Kopieren ist billig.
+                            synchronized(lock) { bitmap.getPixels(pixels, 0, w, x, y, w, h) }
+                            stretchedTile(w, h, pixels) ?: continue
+                        } catch (e: Throwable) {
+                            Log.w(TAG, "Kachel konnte nicht erzeugt werden", e)
+                            queue.clear()
+                            break
+                        }
                         try {
-                            readTile(big, rotationDegrees, into)
+                            for (pass in TILE_PASSES) {
+                                val readersForPass = pass.profiles.map { tileReaders.getValue(it) }
+                                if (pass.scale == 1f) {
+                                    readTile(tile, readersForPass, rotationDegrees, into, lock)
+                                    continue
+                                }
+                                val scaled = try {
+                                    Bitmap.createScaledBitmap(
+                                        tile, (w * pass.scale).toInt(), (h * pass.scale).toInt(), true
+                                    )
+                                } catch (e: Throwable) {
+                                    continue
+                                }
+                                try {
+                                    readTile(scaled, readersForPass, rotationDegrees, into, lock)
+                                } finally {
+                                    scaled.recycle()
+                                }
+                            }
                         } finally {
-                            big.recycle()
+                            tile.recycle()
                         }
                     }
-                } finally {
-                    tile.recycle()
                 }
             }
+            futures.forEach { it.get() }
+        } finally {
+            pool.shutdown()
         }
     }
 
@@ -289,37 +343,35 @@ object CompositeScanner {
 
     private fun readTile(
         tile: Bitmap,
+        tileReaders: List<BarcodeReader>,
         rotationDegrees: Int,
-        into: MutableMap<String, ScannedCode>
+        into: MutableMap<String, ScannedCode>,
+        lock: Any
     ) {
         val gray: GrayImage by lazy { BitmapGrayImage(tile, rotationDegrees) }
-        for (index in TILE_PROFILES) {
+        for (reader in tileReaders) {
             val results = try {
-                readers[index].read(tile, android.graphics.Rect(), rotationDegrees)
+                reader.read(tile, android.graphics.Rect(), rotationDegrees)
             } catch (e: Exception) {
                 Log.w(TAG, "zxing-cpp konnte die Kachel nicht auswerten", e)
                 continue
             }
             for (result in results) {
                 val code = toScannedCode(result) { gray } ?: continue
-                if (!into.containsKey(code.rawValue)) into[code.rawValue] = code
+                synchronized(lock) {
+                    if (!into.containsKey(code.rawValue)) into[code.rawValue] = code
+                }
             }
         }
     }
 
     /**
-     * Schneidet eine Kachel aus und spreizt ihren Kontrast linear zwischen dem 1.- und
-     * dem 99,5-Prozent-Perzentil der Helligkeit. Das Ergebnis ist ein Graustufenbild.
+     * Spreizt den Kontrast einer ausgeschnittenen Kachel linear zwischen dem 1.- und dem
+     * 99,5-Prozent-Perzentil der Helligkeit. [pixels] enthaelt beim Aufruf die
+     * Farbpixel; das Ergebnis ist ein Graustufenbild. Kacheln ohne Kontrast
+     * (Hintergrund, Kartonrand) enthalten keinen Code und liefern null.
      */
-    private fun stretchedTile(
-        source: Bitmap,
-        x: Int,
-        y: Int,
-        w: Int,
-        h: Int,
-        pixels: IntArray
-    ): Bitmap {
-        source.getPixels(pixels, 0, w, x, y, w, h)
+    private fun stretchedTile(w: Int, h: Int, pixels: IntArray): Bitmap? {
         val count = w * h
         val histogram = IntArray(256)
         for (i in 0 until count) {
@@ -330,6 +382,7 @@ object CompositeScanner {
         }
         val lo = percentile(histogram, count, 0.01)
         val hi = percentile(histogram, count, 0.995)
+        if (hi - lo < TILE_MIN_CONTRAST) return null
         val span = maxOf(hi - lo, 8)
         for (i in 0 until count) {
             val v = ((pixels[i] - lo) * 255 / span).coerceIn(0, 255)
@@ -354,10 +407,11 @@ object CompositeScanner {
     private fun collectInto(
         bitmap: Bitmap,
         rotationDegrees: Int,
-        into: MutableMap<String, ScannedCode>
+        into: MutableMap<String, ScannedCode>,
+        profiles: List<Int> = readers.indices.toList()
     ) {
         val gray: GrayImage by lazy { BitmapGrayImage(bitmap, rotationDegrees) }
-        for (reader in readers) {
+        for (reader in profiles.map { readers[it] }) {
             val results = try {
                 reader.read(bitmap, android.graphics.Rect(), rotationDegrees)
             } catch (e: Exception) {

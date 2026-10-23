@@ -61,4 +61,6 @@
     <string name="gs1_unknown_ai">No known AI from \"%1$s\" onwards \u2013 this part was not evaluated.</string>
     <string name="gs1_embedded_symbology_id">The symbology identifier \"%1$s\" is also encoded in the symbol. It is added by the reader and does not belong in the data \u2013 it was removed for parsing.</string>
     <string name="image_not_loaded">Image could not be loaded \u2013 it may be too large for the available memory.</string>
+    <string name="image_processing">Processing image…</string>
+    <string name="image_processing_hint">Large images can take a while. The camera is paused until the analysis is finished.</string>
 </resources>
