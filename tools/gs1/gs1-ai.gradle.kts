@@ -179,7 +179,7 @@ abstract class GenerateGs1AiDictionary : DefaultTask() {
             |package com.example.codescannergs1
             |
             |// ---------------------------------------------------------------------------
-            |// GENERIERT von der Gradle-Task generateGs1AiDictionary (app/gs1-ai.gradle.kts)
+            |// GENERIERT von der Gradle-Task generateGs1AiDictionary (tools/gs1/gs1-ai.gradle.kts)
             |// – nicht von Hand bearbeiten. Quellen aktualisieren: gradlew updateGs1Ai
             |//
             |// Quelle: GS1 Barcode Syntax Dictionary (Release: $release)
